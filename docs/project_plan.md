@@ -112,6 +112,8 @@ Repeated aircraft investigations are linked when appropriate, and the full canon
 
 # 4. Phase 0 — Project Foundation
 
+Status: Completed
+
 ## Objective
 
 Create a professional but minimal project foundation before implementing visual logic.
@@ -258,19 +260,35 @@ configuration loads
 basic entry point works
 ```
 
-## Definition of Done
 
-Phase 0 is complete when:
+### Completed work
 
-- fresh clone + `uv sync` works;
-- `events_diary` imports correctly;
-- pytest runs successfully;
-- Ruff runs successfully;
-- configuration foundation exists;
-- basic logging/runtime inspection exists;
-- first entry point runs;
-- README and core design docs exist;
-- no Flightradar24 analysis logic has been introduced yet.
+- Repository setup
+- Python 3.10 environment with uv
+- Project metadata and dependency management
+- Source package structure
+- pytest and Ruff setup
+- Documentation foundation
+- Application configuration foundation
+- Logging foundation
+- Runtime environment inspection
+- Application entry point
+- Foundation tests
+
+### Definition of Done
+
+Phase 0 is complete because:
+
+- `uv sync` works
+- `events_diary` imports correctly
+- `uv run python -m events_diary` runs successfully
+- pytest passes
+- Ruff passes
+- configuration foundation exists
+- logging foundation exists
+- runtime inspection exists
+- README and design documentation exist
+- no Flightradar24 analysis logic has been introduced yet
 
 ---
 
