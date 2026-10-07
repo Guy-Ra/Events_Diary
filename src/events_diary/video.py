@@ -7,6 +7,7 @@ At this stage, the module is intentionally limited to metadata
 inspection. Frame sampling will be added later in Phase 1.
 """
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,18 +102,19 @@ def read_video_metadata(path: Path) -> VideoMetadata:
 
     capture = cv2.VideoCapture(str(path))
 
-    if not capture.isOpened():
-        raise ValueError(f"Unable to open video file: {path}")
+    try:
+        if not capture.isOpened():
+            raise ValueError(f"Unable to open video file: {path}")
 
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        if not math.isfinite(fps) or fps <= 0:
+            raise ValueError(f"Video reports an invalid FPS value: {fps}")
 
-    capture.release()
-
-    if fps <= 0:
-        raise ValueError(f"Video reports an invalid FPS value: {fps}")
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        capture.release()
 
     duration_seconds = frame_count / fps
 
@@ -144,8 +146,15 @@ def generate_sample_timestamps(duration_seconds: float,sample_fps: float,) -> li
 
     Raises:
         ValueError:
-            If the duration is negative or if sample_fps is not positive.
+            If either input is non-finite, the duration is negative,
+            or sample_fps is not positive.
     """
+
+    if not math.isfinite(duration_seconds):
+        raise ValueError("Video duration must be finite.")
+
+    if not math.isfinite(sample_fps):
+        raise ValueError("Sample FPS must be finite.")
 
     if duration_seconds < 0:
         raise ValueError("Video duration cannot be negative.")
@@ -153,14 +162,14 @@ def generate_sample_timestamps(duration_seconds: float,sample_fps: float,) -> li
     if sample_fps <= 0:
         raise ValueError("Sample FPS must be greater than zero.")
 
-    interval_seconds = 1.0 / sample_fps
-
     timestamps: list[float] = []
+    sample_index = 0
     timestamp = 0.0
 
     while timestamp < duration_seconds:
         timestamps.append(timestamp)
-        timestamp += interval_seconds
+        sample_index += 1
+        timestamp = sample_index / sample_fps
 
     return timestamps
 
@@ -218,12 +227,12 @@ def sample_video(path: Path,sample_fps: float,) -> list[SampledFrame]:
 
     capture = cv2.VideoCapture(str(path))
 
-    if not capture.isOpened():
-        raise ValueError(f"Unable to open video file: {path}")
-
     sampled_frames: list[SampledFrame] = []
 
     try:
+        if not capture.isOpened():
+            raise ValueError(f"Unable to open video file: {path}")
+
         for requested_timestamp in timestamps:
             capture.set(
                 cv2.CAP_PROP_POS_MSEC,
