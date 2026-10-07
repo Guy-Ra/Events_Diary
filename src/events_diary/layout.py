@@ -16,6 +16,8 @@ layout recovery. Those capabilities are handled by later stages of the
 pipeline.
 """
 
+import math
+from dataclasses import dataclass
 from enum import Enum
 
 from events_diary.config import ROI, UIConfig
@@ -29,6 +31,108 @@ class LayoutKind(str, Enum):
     PARTIAL_OR_CROPPED = "partial_or_cropped"
 
 
+@dataclass(frozen=True)
+class LayoutTransform:
+    """A supplied reference-to-frame transform; performs no layout estimation."""
+
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("scale_x", "scale_y"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive.")
+        for name in ("offset_x", "offset_y"):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite.")
+
+
+@dataclass(frozen=True)
+class TransformedBounds:
+    """Unrounded, possibly negative frame-space edges; not a crop-able ROI."""
+
+    left: float
+    top: float
+    right: float
+    bottom: float
+
+
+class ROIVisibility(str, Enum):
+    """Visibility of the complete unrounded region within a frame."""
+
+    FULL = "full"
+    PARTIAL = "partial"
+    OUTSIDE = "outside"
+
+
+@dataclass(frozen=True)
+class MappedROI:
+    """Preserve original geometry and visibility alongside the visible crop."""
+
+    transformed_bounds: TransformedBounds
+    visibility: ROIVisibility
+    visible_roi: ROI | None
+
+
+def _transform_bounds(roi: ROI, transform: LayoutTransform) -> TransformedBounds:
+    bounds = TransformedBounds(
+        left=roi.x * transform.scale_x + transform.offset_x,
+        top=roi.y * transform.scale_y + transform.offset_y,
+        right=roi.right * transform.scale_x + transform.offset_x,
+        bottom=roi.bottom * transform.scale_y + transform.offset_y,
+    )
+    if not all(math.isfinite(edge) for edge in (
+        bounds.left, bounds.top, bounds.right, bounds.bottom,
+    )):
+        raise ValueError("Transformed bounds must be finite.")
+    if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+        raise ValueError("Transformed bounds collapsed to zero area.")
+    return bounds
+
+
+def _bounds_to_roi(bounds: TransformedBounds) -> ROI:
+    # Shared edges use the same nearest-integer rounding (ties to even).
+    left, top = round(bounds.left), round(bounds.top)
+    right, bottom = round(bounds.right), round(bounds.bottom)
+    if right <= left or bottom <= top:
+        raise ValueError("Visible geometry collapsed to zero pixel area after rounding.")
+    return ROI(left, top, right - left, bottom - top)
+
+
+def map_roi_with_transform(
+    roi: ROI,
+    transform: LayoutTransform,
+    frame_width: int,
+    frame_height: int,
+) -> MappedROI:
+    """Map supplied geometry, preserving visibility before pixel rounding.
+
+    Raises ValueError for invalid dimensions or visible geometry that rounds
+    to zero pixel area. Edge-only contact is OUTSIDE, with no visible ROI.
+    """
+    if (not math.isfinite(frame_width) or not math.isfinite(frame_height)
+            or frame_width <= 0 or frame_height <= 0):
+        raise ValueError("Frame dimensions must be positive and finite.")
+
+    bounds = _transform_bounds(roi, transform)
+    intersection = TransformedBounds(
+        left=max(0.0, bounds.left),
+        top=max(0.0, bounds.top),
+        right=min(frame_width, bounds.right),
+        bottom=min(frame_height, bounds.bottom),
+    )
+    if intersection.right <= intersection.left or intersection.bottom <= intersection.top:
+        return MappedROI(bounds, ROIVisibility.OUTSIDE, None)
+
+    full = (bounds.left >= 0 and bounds.top >= 0
+            and bounds.right <= frame_width and bounds.bottom <= frame_height)
+    visibility = ROIVisibility.FULL if full else ROIVisibility.PARTIAL
+    return MappedROI(bounds, visibility, _bounds_to_roi(intersection))
+
+
 def scale_roi(
     roi: ROI,
     scale_x: float,
@@ -36,12 +140,7 @@ def scale_roi(
 ) -> ROI:
     """Scale an ROI from reference coordinates to another frame size."""
 
-    return ROI(
-        x=round(roi.x * scale_x),
-        y=round(roi.y * scale_y),
-        width=round(roi.width * scale_x),
-        height=round(roi.height * scale_y),
-    )
+    return _bounds_to_roi(_transform_bounds(roi, LayoutTransform(scale_x, scale_y)))
 
 
 def map_roi_to_frame(
@@ -80,10 +179,13 @@ def classify_layout(
 ) -> LayoutKind:
     """Classify a frame relative to the canonical UI layout."""
 
-    if frame_width <= 0 or frame_height <= 0:
-        raise ValueError("Frame dimensions must be positive.")
-    if config.reference_width <= 0 or config.reference_height <= 0:
-        raise ValueError("Reference dimensions must be positive.")
+    if (not math.isfinite(frame_width) or not math.isfinite(frame_height)
+            or frame_width <= 0 or frame_height <= 0):
+        raise ValueError("Frame dimensions must be positive and finite.")
+    if (not math.isfinite(config.reference_width)
+            or not math.isfinite(config.reference_height)
+            or config.reference_width <= 0 or config.reference_height <= 0):
+        raise ValueError("Reference dimensions must be positive and finite.")
 
     if (
         frame_width == config.reference_width
