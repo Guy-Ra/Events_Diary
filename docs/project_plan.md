@@ -294,59 +294,167 @@ Phase 0 is complete because:
 
 # 5. Phase 1 — Video Decode & Time-Based Sampling
 
+## Status
+
+Completed.
+
 ## Objective
 
-Reliably decode source video and expose time-based samples.
+Reliably decode source video, inspect its metadata, and expose timestamped
+video samples using time-based sampling.
 
-## Main requirements
+## Implemented
 
-Read:
+### Video Metadata
+
+Implemented structured video metadata extraction containing:
 
 ```text
-duration
-source FPS
-resolution
-frame count
-timestamps
+path
+duration_seconds
+fps
+frame_count
+width
+height
 ```
 
-Sampling must be based on time rather than fixed frame intervals.
+Metadata is read from the source video using OpenCV.
 
-Timestamp is the primary temporal representation.
+Validation includes:
 
-## Calibration task
+- missing file detection;
+- video open failure;
+- invalid FPS detection.
 
-Compare several sampling rates on real footage:
+### Time-Based Sampling
+
+Implemented timestamp generation based on a requested sampling rate.
+
+Sampling is defined in time rather than by fixed frame intervals.
+
+Example:
 
 ```text
-1 FPS
 2 FPS
-4 FPS
-8 FPS
+→ 0.0, 0.5, 1.0, 1.5, ...
 ```
 
-Determine the lowest rate that still captures the shortest meaningful operator activity.
+This keeps downstream processing independent of the source video's FPS.
 
-## Expected outputs
+### Sampled Frames
 
-A structured video metadata object and sampled frames with timestamps.
+Each sampled frame preserves:
 
-Exact data models should be defined immediately before implementation.
+```text
+requested_timestamp_seconds
+actual_timestamp_seconds
+frame_index
+image
+```
+
+This allows downstream stages to retain both the requested sampling time
+and the actual frame returned by the video decoder.
+
+### Seek-Based Sampling
+
+The current coarse sampler uses OpenCV seek operations through:
+
+```text
+CAP_PROP_POS_MSEC
+```
+
+The actual frame position is tracked using:
+
+```text
+CAP_PROP_POS_FRAMES
+```
+
+This approach is used for sparse time-based sampling in Phase 1.
+
+Sequential frame reading may be introduced in later phases for dense
+temporal analysis.
+
+### Sampling Rate Protection
+
+If the requested sampling FPS exceeds the source video FPS:
+
+```text
+requested FPS > source FPS
+→ cap to source FPS
+→ log warning
+→ continue processing
+```
+
+This prevents unnecessary duplicate frame requests.
+
+### Failure Handling
+
+Individual failed frame reads are logged and skipped rather than causing
+the complete video sampling operation to fail.
+
+Video resources are always released after processing.
+
+## Validation
+
+Phase 1 was validated using both automated tests and a real
+Flightradar24 screen recording.
+
+Test video:
+
+```text
+middle_east1.mp4
+```
+
+Observed metadata:
+
+```text
+Duration: 33.9 seconds
+FPS: 10.0
+Frame count: 339
+Resolution: 1906x984
+```
+
+At a sampling rate of 2 FPS:
+
+```text
+Samples: 68
+Unique frame indices: 68
+Monotonic frame progression: True
+```
+
+Requested and actual timestamps matched correctly in the validated video.
+
+Visual sanity checks were also performed at several timestamps across the
+recording and the extracted frames matched the expected positions in the
+source video.
 
 ## Tests
 
-- normal MP4;
-- variable frame rate if available;
-- short video;
-- video starts during active ticket;
-- video ends during active ticket;
-- corrupted/unreadable frame behavior.
+Phase 1 completed with:
 
-## Done when
+```text
+13 pytest tests passing
+Ruff checks passing
+Real-video validation passing
+Visual sanity check passing
+```
 
-The same source video produces reliable timestamped samples and inspectable metadata.
+## Definition of Done
 
----
+Phase 1 is complete because:
+
+- video files can be opened and validated;
+- metadata is extracted correctly;
+- sampling is based on time;
+- sampled frames preserve timing and frame-index information;
+- invalid sampling rates are handled;
+- sampling above the source FPS is capped with a warning;
+- frame-read failures are handled gracefully;
+- automated tests pass;
+- Ruff passes;
+- metadata was validated against a real video;
+- sampling was numerically validated;
+- sampled frames were visually validated.
 
 # 6. Phase 2 — UI Regions & Change Features
 

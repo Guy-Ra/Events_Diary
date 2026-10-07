@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Local visual intelligence system for analyzing Flightradar24 screen recordings using OCR, computer vision, and VLMs to generate structured aircraft event logs."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "opencv-python>=5.0.0.93",
+]
 
 [dependency-groups]
 dev = [
