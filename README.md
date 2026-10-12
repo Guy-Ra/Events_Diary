@@ -4,9 +4,15 @@ Local visual intelligence system for analyzing Flightradar24 screen recordings u
 
 ## Project Status
 
-Early development / project foundation.
+**Phase 2 - UI Regions & Change Features is complete.**
 
-The current focus is building the project infrastructure and core pipeline incrementally, with each phase implemented and validated separately.
+**Next planned: Phase 3 - Investigation Event Detection.**
+
+The visual foundation now includes UI/layout mapping, ROI change metrics, map
+motion compensation, and pair-level/temporal ticket-scroll analysis, validated on
+real videos with cross-phenomenon checks. Investigation detection remains planned.
+See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md)
+for implementation details and provisional-threshold limitations.
 
 ## Goals
 

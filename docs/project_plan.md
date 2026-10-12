@@ -458,73 +458,85 @@ Phase 1 is complete because:
 
 # 6. Phase 2 — UI Regions & Change Features
 
-## Objective
+## Status
 
-Measure visual changes in semantic regions.
+**Phase 2: COMPLETE.** Subphases 2.1-2.5 are complete and closure validation
+has been reviewed and accepted. Next planned: **Phase 3 - Investigation Event
+Detection**. No Phase 3 Investigation decisions are implemented yet.
 
-No Investigation decisions yet.
+## Completed outcomes
 
-## Main work
+### 2.1 UI Regions & Layout Mapping - COMPLETE
 
-Define reference-resolution UI regions for:
+Frozen UIConfig/ROI geometry uses a canonical 1920x1080 reference. Existing ticket
+header, aircraft image, scroll body, and map analysis regions are explicitly
+mapped. Layout classification supports exact/proportional geometry; supplied
+scale/offset transforms preserve partial/outside visibility for cropped frames.
+Automatic layout recovery is deferred. Four map UI ignore rectangles exclude
+SIFT features only, without masking metric pixels.
 
-```text
-ticket
-map
-route-related area
-aircraft image
-selected-aircraft context
-static UI masks
-```
+### 2.2 Basic ROI Change Metrics - COMPLETE
 
-The ticket outer panel can be spatially stable while its internal content scrolls.
+Public MAD and Changed Pixel Ratio compare matching uint8 grayscale/BGR arrays.
+Safe grayscale difference is reused without implicit resizing or normalization.
+CPR defaults to the experimental intensity threshold 10, with explicit overrides.
+SSIM remains intentionally deferred; metrics do not interpret events.
 
-The full map, including the right side, is useful.
+### 2.3 Map Motion Compensation - COMPLETE
 
-Browser chrome/static controls should be ignored.
+SIFT -> BF L2 KNN -> Lowe ratio -> RANSAC partial-affine estimation produces
+B-to-A translation/scale evidence, rotation diagnostics, validity/reasons, and
+raw versus overlap-aware aligned MAD/CPR. Static UI masks affect detection only;
+rotation is checked but omitted from warping. Weak evidence is rejected.
 
-## Candidate features
+Engineering conclusion: **dense consecutive-frame analysis is the preferred
+production approach for map motion**, because large distant-frame displacement
+can reduce geographic feature overlap. Canonical pan video achieved 124/124 valid
+estimates with meaningful translation and near-unit scale. Zoom achieved 86/88
+valid estimates and coherent below-/above-one scale changes. Rejected zoom pairs
+and potentially increased interpolation residual MAD remain known limitations.
+Thresholds remain provisional; no fallback or automatic tuning was added.
 
-- MAD;
-- changed-pixel ratio;
-- SSIM;
-- grayscale/downscaled comparison;
-- map motion estimate;
-- ticket vertical scroll estimate.
+### 2.4 Ticket Scroll Detection - COMPLETE
 
-## Map compensation
+Implemented pair-level measurement plus temporal scroll-state interpretation.
+TicketScrollEvidence reuses four-ROI MAD/CPR and estimates A-to-B body translation
+with float32 grayscale phase correlation and a Hann window. The pair helper uses
+provisional activity/displacement/dominance/surrounding-stability criteria.
 
-Estimate:
+Offline temporal analysis returns QUIET, SCROLLING_UP, or SCROLLING_DOWN using
+short centered context and bounded gap bridging. States describe active motion,
+not the entire human interaction; pauses can be QUIET. No scroll events, start/end
+timestamps, Investigation suppression, or broader cooldown context is implemented.
+Those consumer-level responsibilities remain for later phases.
 
-```text
-translation
-scale
-```
+### 2.5 Real-Video Validation & Closure - COMPLETE
 
-Rotation is not required for the current north-up UI.
+`scripts/validate_phase2.py` combines real-video regression with limited
+cross-phenomenon checks using unchanged production APIs at source-frame density.
 
-## Ticket scroll feature
+- Pan: 124/124 valid map estimates; translation with scale approximately one.
+- Zoom: 86/88 valid; coherent scale changes below and above one.
+- Ticket scroll: 18/83 pair positives; 65 QUIET / 11 UP / 7 DOWN states. Active
+  states stay inside known scroll periods; quiet gaps are preserved.
+- Cross-check: ticket-scroll logic yields 0/124 positives on pan and 0/88 on zoom,
+  with all temporal states QUIET. Map motion during ticket scrolling is near
+  identity (maximum translation 0.0252 pixels).
+- No unexpected cross-talk or new production issue was observed.
+- Closure verification: **365 pytest tests passed; Ruff passed**.
 
-Detect vertical motion within the ticket while aircraft identity/header remains stable.
+Videos, CSVs, debug PNGs, and `data/debug/map_motion/phase2_validation_report.txt`
+remain local ignored evaluation evidence; no data artifacts are committed.
 
-## Tests
+## Outcome and next phase
 
-Create representative frame pairs for:
+Phase 2 supplies validated region-change measurements, map-motion evidence,
+raw/aligned metrics, ticket-scroll evidence, and active temporal scroll context
+for later inclusion/exclusion/context reasoning. Working thresholds remain
+provisional; these signals do not themselves decide Investigation Events.
 
-```text
-no change
-ticket text update
-new selected aircraft
-ticket scroll
-map pan
-map zoom
-route change
-aircraft image load
-```
-
-## Done when
-
-The system produces interpretable change features that distinguish meaningful UI changes from pan/zoom/scroll artifacts.
+**Next: Phase 3 - Investigation Event Detection.** Its existing plan below remains
+planned work and will consume Phase 2 evidence rather than redefine these layers.
 
 ---
 

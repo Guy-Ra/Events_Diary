@@ -313,49 +313,169 @@ Frames should not be permanently stored unless needed as evidence or debug outpu
 
 ## Phase 2 — UI Regions & Change Features
 
-Purpose:
+Status: COMPLETE (2.1-2.5). Phase 3, Investigation Event Detection, is next.
+Phase 2 measures visual evidence and interprets active scroll motion; it does not
+make Investigation decisions or extract semantic ticket/aircraft information.
 
-Measure visual changes in meaningful regions without deciding yet whether an Investigation Event occurred.
+### UI / ROI layer (2.1)
 
-Possible signals:
+`config.py` defines frozen `UIConfig` and rectangular `ROI` objects against the
+canonical 1920x1080 layout. `ROI.crop()` uses exclusive right/bottom boundaries
+and rejects out-of-frame crops. Existing canonical regions include:
 
-- mean absolute difference;
-- changed-pixel ratio;
-- SSIM;
-- grayscale/downscaled change measures.
+| Region | x | y | Width | Height |
+|---|---:|---:|---:|---:|
+| `map_analysis_region` | 352 | 121 | 1568 | 919 |
+| `ticket_header` | 16 | 121 | 336 | 76 |
+| `aircraft_image` | 16 | 197 | 336 | 189 |
+| `ticket_scroll_body` | 16 | 386 | 336 | 566 |
 
-Semantic regions include:
+`layout.py` classifies exact-reference, proportional-scale, and partial/cropped
+layouts. `map_roi_to_frame()` maps compatible layouts proportionally and rejects
+partial/cropped layouts. Explicit `LayoutTransform` scale/offsets can instead be
+supplied to `map_roi_with_transform()`, which retains unrounded bounds, a visible
+crop, and FULL/PARTIAL/OUTSIDE visibility. This supports supplied transforms for
+cropped layouts without claiming automatic layout recovery. Current motion APIs
+with canonical UIConfig and real-video evaluators require exact reference geometry.
 
-```text
-ticket panel
-map
-route
-selected aircraft
-aircraft image
-browser/static controls masks
-```
+`UIConfig.map_ignore_masks` contains four full-frame rectangles: top FR24 strip
+`(352,121,1568,60)`, right controls `(1856,284,60,218)`, bottom toolbar
+`(746,958,428,70)`, and attribution/footer `(1480,1024,440,16)`. These exclude SIFT
+feature centers only. They do not mask raw or aligned pixel metrics, and there
+are no aircraft/route/geographic exclusion categories.
 
-The full map, including the right side, is potentially useful evidence.
+### Basic visual change layer (2.2)
 
-Static browser chrome and irrelevant controls should be masked rather than blindly analyzed.
+`change_metrics.py` accepts nonempty matching uint8 grayscale or three-channel BGR
+arrays. BGR is converted to grayscale, and OpenCV absolute difference avoids
+unsigned subtraction wraparound. No resizing, filtering, or normalization occurs.
 
-### Map motion
+- `compute_mad()` returns mean absolute grayscale difference in intensity units
+  (0-255).
+- `compute_changed_pixel_ratio()` returns the fraction of pixels whose difference
+  is strictly greater than `pixel_threshold`. Its current default is **10**, an
+  experimental working value; callers may explicitly override it within 0-255.
 
-Because pan and zoom can occur, raw pixel difference is insufficient.
+These measurements carry no semantic interpretation. Equal-grayscale color changes
+may be missed, while noise and motion can cause changes. SSIM is intentionally
+deferred and is not part of the completed Phase 2 production implementation.
 
-The system should estimate global map motion and distinguish it from meaningful content changes.
+### Map motion compensation (2.3)
 
-For the initial UI:
+`estimate_map_motion()` in `map_motion.py` returns frozen `MapMotionEstimate`
+evidence, including validity/reason, B-to-A dx/dy/scale/rotation, feature/match/inlier
+counts, inlier ratio, raw MAD/CPR, and optional aligned MAD/CPR.
 
-- map orientation is north-up;
-- rotation is not expected;
-- translation and scale are the relevant global transforms.
+The deterministic pipeline detects SIFT features, matches B descriptors against A
+with BF L2 KNN (`k=2`), applies Lowe's ratio test, and fits a RANSAC partial-affine
+transform. Working values are Lowe ratio 0.75, minimum 10 good matches, 8 inliers,
+inlier ratio 0.50, scale range [0.5,2.0], and rotation tolerance 3 degrees. RANSAC
+uses a 3-pixel reprojection threshold, 2000 maximum iterations, 0.99 confidence,
+and 10 refinement iterations. These are provisional, not production calibration.
 
-### Ticket scroll motion
+From the fitted matrix `[[a,-b,tx],[b,a,ty]]`, derive scale `hypot(a,b)`, rotation
+`degrees(atan2(b,a))`, dx `tx`, and dy `ty`. The intended north-up model supports
+translation plus uniform scale. Rotation is retained diagnostically and checked
+for validity; accepted rotation is excluded from the alignment warp.
 
-A dedicated signal should detect dominant vertical content motion inside the ticket while the selected aircraft identity remains stable.
+When `ui_config` is supplied, full-frame ignore rectangles subtract the map origin
+(352,121) to build a map-local uint8 SIFT mask (255 allowed / 0 excluded). Inputs
+must match canonical crop dimensions. Generic calls without configuration remain
+unmasked. Input image pixels are never changed by detection masks.
 
-This signal explains ticket scrolling and helps prevent false Investigation boundaries.
+Map B is warped into Map A using `[[scale,0,dx],[0,scale,dy]]` with linear
+interpolation. An all-ones support image is warped identically; only pixels with
+full source support enter aligned MAD/CPR through the existing metric APIs.
+Artificial padding is excluded. Raw metrics cover the whole crop, so their domain
+differs from aligned overlap. Invalid fits retain raw metrics and an explanatory
+reason, with aligned metrics unavailable. Missing descriptors, weak matches or
+inliers, failed/non-finite transforms, implausible scale/rotation, and empty overlap
+are rejected rather than forced into a result.
+
+Engineering conclusion: **dense consecutive-source-frame analysis is the preferred
+production approach for map motion**. Large distant-frame displacement can reduce
+geographic feature overlap; static overlays also previously dominated the distant
+pan fit. SIFT masking removes static UI feature centers but cannot recover missing
+geographic overlap. Adjacent-frame comparisons preserve overlap better.
+This is an input-selection conclusion, not a new detector or fallback algorithm.
+
+Real-video validation confirmed meaningful pan translation with near-unit scale
+and coherent zoom scale changes. Some weak zoom fits may be rejected. Residual MAD may rise
+after interpolation/re-rendering even when CPR improves; validity does not prove
+that global motion explains every visual change.
+
+### Ticket scroll analysis (2.4)
+
+`estimate_ticket_scroll_evidence(frame_a, frame_b, ui_config)` accepts full matching
+canonical uint8 grayscale/BGR frames. Frozen `TicketScrollEvidence` contains:
+`header_mad`, `header_cpr`, `aircraft_image_mad`, `aircraft_image_cpr`, `body_mad`,
+`body_cpr`, `map_mad`, `map_cpr`, `dx`, `dy`, and `motion_response`.
+
+All four ROIs reuse existing MAD/default CPR. Only `ticket_scroll_body` supplies
+motion: grayscale float32 arrays, a Hann window, and `cv2.phaseCorrelate()`.
+Displacement is **A-to-B**, right/down positive, opposite to map compensation's
+B-to-A convention. dx/dy are not clipped; response is diagnostic without a
+reliability threshold. Repetitive or textureless content and large shifts can
+produce unreliable motion even with finite values.
+
+`is_vertical_scroll_evidence()` requires all inclusive working conditions:
+body CPR >=0.10, |dy| >=2 pixels, |dy| >=3*|dx|, and each header/image/map CPR <=0.01.
+These defaults are provisional, informed by one recording and simple margins;
+vertical dominance is especially uncalibrated. Non-finite decision inputs fail.
+A positive pair is evidence only, not a temporal event or Investigation decision.
+
+`analyze_ticket_scroll_sequence()` consumes those records without recomputing
+pixels or motion. It returns one `TicketScrollState` per input pair:
+`QUIET="quiet"`, `SCROLLING_UP="scrolling_up"`, or
+`SCROLLING_DOWN="scrolling_down"`. Provisional defaults are window_size=5,
+min_positive_pairs=2, max_gap_pairs=1. Positive pairs form candidate spans across
+at most one False gap; longer gaps split spans. Centered offline windows are
+clipped to each span and sequence boundary, require two positives, and use only
+positive dy signs for direction. Ties are QUIET; no leading/trailing quiet extension
+occurs. Future pairs are used, so this is not a causal streaming API.
+
+Scrolling states represent detected active motion in the current context, not the
+entire human scrolling interaction. Short or longer pauses may legitimately be
+QUIET between bursts. A future "recently scrolling" cooldown or broader interaction
+context belongs to a higher-level consumer such as Phase 3 Investigation Detection,
+rather than artificial extension of these states. No scroll-event objects,
+start/end timestamps, or Investigation decisions are created.
+
+### Real-video validation and closure (2.5)
+
+`scripts/validate_phase2.py` exercises both pipelines on consecutive decoded frames
+at source FPS, with explicit EOF/count/layout validation.
+Manual evaluation scripts retain source indices and nominal index/FPS times;
+constant-FPS assumptions and metadata-count limitations remain explicit.
+
+Closure validation confirmed these architectural conclusions:
+
+- Pan estimation captures meaningful translation while scale remains near one.
+- Zoom estimation shows coherent scale changes, with occasional rejected weak fits.
+- Ticket-scroll evidence and temporal states capture the correct vertical direction
+  during active motion; quiet intervals and pauses remain quiet.
+- Cross-phenomenon checks showed no problematic confusion between map motion and
+  ticket scrolling in the representative recordings.
+- Tests and lint passed at closure; no new production issue was observed.
+
+This representative manual validation is not an accuracy benchmark. Detailed
+measurements belong in the local validation report. Videos, CSVs, and debug images
+remain local ignored evaluation evidence, not committed architecture artifacts.
+
+### Phase 2 output contract for Phase 3
+
+Phase 2 provides UI-region change signals, geometric map-motion estimates with
+validity/rejection diagnostics, raw/aligned visual metrics, pair-level ticket-scroll
+evidence, and temporal active-scroll state. These validated signals can support
+inclusion, exclusion, or contextual reasoning by Phase 3. They are not semantic
+proof of aircraft identity, route changes, or an Investigation boundary. Consumers
+must preserve unavailable estimates, coordinate conventions, and metric domains.
+
+Known limitations remain: provisional thresholds, possible rejected zoom pairs,
+interpolation residuals, active-motion rather than whole-interaction scroll state,
+frame-rate-dependent temporal context, and no automatic layout recovery. Phase 2
+is COMPLETE; **Phase 3 - Investigation Event Detection is next planned**, where
+broader context and Investigation decisions will be designed separately.
 
 ---
 
