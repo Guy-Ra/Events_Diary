@@ -96,4 +96,11 @@ class UIConfig:
 
     system_taskbar: ROI = ROI(0, 1040, 1920, 40)
 
-    map_ignore_masks: tuple[ROI, ...] = ()
+    # Canonical full-frame rectangles: SIFT detection exclusions only.
+    # Slight padding covers overlay edges; these are not metric masks.
+    map_ignore_masks: tuple[ROI, ...] = (
+        ROI(352, 121, 1568, 60),   # Persistent top FR24 strip.
+        ROI(1856, 284, 60, 218),   # Zoom, fullscreen, navigation controls.
+        ROI(746, 958, 428, 70),    # Settings/weather/filters/widgets/playback.
+        ROI(1480, 1024, 440, 16), # Attribution and scale footer.
+    )
