@@ -313,7 +313,7 @@ Frames should not be permanently stored unless needed as evidence or debug outpu
 
 ## Phase 2 — UI Regions & Change Features
 
-Status: COMPLETE (2.1-2.5). Phase 3, Investigation Event Detection, is next.
+Status: COMPLETE (2.1-2.5). Phase 3 consumes this completed visual foundation.
 Phase 2 measures visual evidence and interprets active scroll motion; it does not
 make Investigation decisions or extract semantic ticket/aircraft information.
 
@@ -474,97 +474,145 @@ must preserve unavailable estimates, coordinate conventions, and metric domains.
 Known limitations remain: provisional thresholds, possible rejected zoom pairs,
 interpolation residuals, active-motion rather than whole-interaction scroll state,
 frame-rate-dependent temporal context, and no automatic layout recovery. Phase 2
-is COMPLETE; **Phase 3 - Investigation Event Detection is next planned**, where
-broader context and Investigation decisions will be designed separately.
+is COMPLETE; Phase 3 now consumes these measurements in separate signal, candidate,
+confirmation, and lifecycle layers. Phase 4 is the next planned phase.
 
 ---
 
 ## Phase 3 — Investigation Event Detection
 
-Purpose:
-
-Convert Phase 2 signals into a timeline of operator Investigation Events.
-
-Conceptual states:
+Status: COMPLETE (3.1-3.5). Next planned: Phase 4 - Investigation Extraction &
+Adaptive Sampling. The completed offline pipeline is:
 
 ```text
-NO_INVESTIGATION
-CANDIDATE_INVESTIGATION
-ACTIVE_INVESTIGATION
+video frames
+-> single-frame Investigation presence
+-> pair-level InvestigationSignals
+-> OPEN / SWITCH / CLOSE / NONE candidates
+-> temporal confirmation
+-> Investigation lifecycle intervals
 ```
 
-Example:
+The layers distinguish current visual presence, pair changes, candidate hypotheses,
+confirmed events, and lifecycle state. None establishes aircraft identity or
+extracts ticket content. Existing Phase 2 coordinate conventions and unavailable
+measurements remain explicit.
 
-```text
-ACTIVE A
-→ candidate B
-→ ACTIVE B
-```
+### Presence and pair signals (3.1)
 
-This allows direct switching between aircraft without requiring the ticket to close.
+`investigation_signals.py` separates single-frame presence ("What exists now?")
+from pair-level changes ("What changed?"). Frozen `InvestigationPresenceEvidence`
+measures dark occupancy in `ticket_bottom_actions`, Canny edge occupancy in
+`ticket_scroll_body`, and diagnostic body light occupancy. The presence classifier
+requires bottom darkness and body structure; brightness is not required, allowing
+sampled dimmed/loading tickets to remain present. Presence does not mean content
+has finished loading or that a new Investigation began.
 
-### Strong signals
+`analyze_investigation_pair()` orchestrates existing APIs into immutable
+`InvestigationSignals`. Header, aircraft image, and ticket body use grayscale
+MAD/CPR and `ChangeSignal` strengths: NOT_AVAILABLE, LOW, MEDIUM, HIGH. Strength is
+CPR-based visual-change magnitude, not confidence. Aligned map residual is
+supporting/context evidence; rejected or unavailable alignment stays NOT_AVAILABLE
+without raw fallback. The original map-motion record retains diagnostics.
 
-Potential strong evidence:
+`route_selection.py` compares provisional route-colored masks after B-to-A
+translation/scale compensation on fully supported overlap. Its pair classifier
+requires both additions and removals, distinguishing replacement from initial
+appearance. Color evidence does not establish route geometry, ownership, or
+identity. Existing ticket-scroll evidence and its pair classifier remain separate,
+with A-to-B motion semantics and no TicketScrollState in InvestigationSignals.
 
-- ticket header change;
-- origin/destination change;
-- aircraft details change;
-- route change after map compensation.
+### Pair-level candidates (3.2)
 
-### Supporting signals
+`investigation_detection.py` returns frozen `InvestigationCandidate` records with
+kind and deterministic reason. MEDIUM/HIGH header/image/body changes are meaningful;
+LOW/NOT_AVAILABLE do not vote. Presence is classified internally for both frames.
 
-Potential supporting evidence:
+| Presence transition | Candidate rule |
+|---|---|
+| False -> False | NONE |
+| False -> True | OPEN with at least two meaningful ticket signals; otherwise NONE |
+| True -> False | CLOSE |
+| True -> True | SWITCH with route replacement and at least one meaningful ticket signal; otherwise NONE |
 
-- aircraft image change;
-- selected-aircraft visual change;
-- timing patterns;
-- other ticket changes.
+Scroll is context, not a global veto. Generic map residual, translation, scale,
+and rotation are not positive votes. A candidate is a pair hypothesis, not a
+confirmed event or lifecycle transition.
 
-### Negative/explanatory signals
+### Offline temporal confirmation (3.3)
 
-Examples:
+`investigation_temporal.py` consumes consecutive semantic `CandidateTimelineEntry`
+records without rerunning CV. A provisional **0.7-second** future look-ahead window
+requires timestamp coverage and consistent sampled presence: True for OPEN/SWITCH,
+False for CLOSE. NONE is neutral; repeated identical candidates are not required.
+ANY later non-NONE candidate through the inclusive horizon supersedes the earlier
+candidate, including the same kind. Semantic candidate merging is not implemented.
 
-- map pan/zoom;
-- ticket scroll.
+Each non-NONE candidate receives CONFIRMED, SUPERSEDED, or
+INSUFFICIENT_FUTURE_CONTEXT. Only confirmed OPEN/SWITCH/CLOSE become
+`ConfirmedInvestigationEvent` records. Early video endings do not shorten the
+window. Full-coverage presence reversal without an associated candidate is an
+explicit ambiguity error rather than an invented rejection status.
 
-Ticket-only vertical scrolling with stable aircraft identity must not produce a new Investigation Event.
+`candidate_time_seconds` is the original pair's after-frame event-time estimate.
+`confirmed_at_seconds` is that time plus the look-ahead horizon, recording when
+sufficient context is available. It must never replace the event timestamp.
+Chronological consecutive coverage and shared-frame presence are validated.
+This is offline confirmation, not streaming detection.
 
-### Temporal stabilization
+### Lifecycle construction (3.4)
 
-A single-frame change must not confirm a new Investigation.
+`investigation_lifecycle.py` consumes initial presence, confirmed semantic events,
+and video bounds only. Its states are NO_INVESTIGATION and ACTIVE_INVESTIGATION;
+candidates/loading are not lifecycle states. Initial presence starts an interval
+at video start with VIDEO_STARTED_ACTIVE, without inventing an OPEN event.
 
-Store separately:
+| State | Confirmed event | Lifecycle behavior |
+|---|---|---|
+| NO_INVESTIGATION | OPEN | Start with OPEN reason |
+| NO_INVESTIGATION | SWITCH | Start with SWITCH reason; intentionally valid |
+| NO_INVESTIGATION | CLOSE | Remain inactive and record a diagnostic anomaly |
+| ACTIVE_INVESTIGATION | SWITCH | End with SWITCH and start a replacement at the same time |
+| ACTIVE_INVESTIGATION | OPEN | End with OPEN_REPLACEMENT and start with OPEN at the same time |
+| ACTIVE_INVESTIGATION | CLOSE | End with CLOSE and become inactive |
 
-```text
-candidate_detected_at
-confirmed_at
-```
+Visual candidate semantics can differ from lifecycle state. NO + SWITCH is valid
+when an accidental opening was superseded but a later present ticket supplies a
+confirmed SWITCH. Superseded candidates never enter lifecycle construction.
 
-Possible end reasons:
+All interval boundaries use candidate times. An interval active at video end
+closes with VIDEO_END at the supplied video end time. Equal event timestamps
+preserve input order and may yield zero-duration intervals; no artificial gap is
+introduced at replacement. Invalid order/bounds/kinds are rejected. Inactive CLOSE
+anomalies are diagnostic and do not stop processing.
 
-```text
-new_selection
-ticket_closed
-video_end
-```
+### Phase 3 output contract and closure (3.5)
 
-Possible start reason:
+Phase 3 produces ordered frozen `InvestigationInterval` records containing a
+contiguous investigation index, start/end seconds, and start/end reasons, plus
+lifecycle anomaly diagnostics. Start reasons are VIDEO_STARTED_ACTIVE, OPEN, and
+SWITCH; end reasons are CLOSE, SWITCH, OPEN_REPLACEMENT, and VIDEO_END. These
+intervals are the semantic input for Phase 4's later evidence extraction and
+adaptive sampling. They contain no aircraft identity, OCR content, selected frames,
+route data, confidence, or canonical final JSON.
 
-```text
-video_started_active
-```
+Closure validation runs the complete production pipeline on representative
+opening/switch, startup-active, and close/no-ticket/reopen recordings. It confirms
+candidate-time boundaries, startup-active handling, temporal superseding of a short
+accidental opening, inactive gaps, and coherent lifecycle intervals without
+unexpected anomalies. Tests, lint, and closure scenario/invariant checks passed.
+Detailed measurements stay in local validation reports, not this architecture.
 
-Signal availability should be represented explicitly:
+Thresholds and the confirmation window remain provisional, derived from a small
+real-video set rather than a benchmark. Known limitations include limited negative
+background/theme coverage for presence, ambiguous partial loading, color-mask
+false positives, poorly calibrated generic map residual, and sampled rather than
+continuous presence. Evaluators require canonical geometry and assume constant FPS
+for nominal index/FPS timestamps. Temporal coverage ends at the last sample;
+lifecycle VIDEO_END uses full nominal metadata duration. No identity, content
+extraction, automatic layout recovery, or online lifecycle is implemented.
 
-```text
-NOT_AVAILABLE
-LOW
-MEDIUM
-HIGH
-```
-
-Unavailable is not equivalent to weak evidence.
+Phase 3 is COMPLETE. Phase 4 - Investigation Extraction & Adaptive Sampling is next.
 
 ---
 

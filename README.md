@@ -4,15 +4,19 @@ Local visual intelligence system for analyzing Flightradar24 screen recordings u
 
 ## Project Status
 
-**Phase 2 - UI Regions & Change Features is complete.**
+**Phase 3 - Investigation Event Detection is complete.**
 
-**Next planned: Phase 3 - Investigation Event Detection.**
+The offline system measures single-frame ticket presence, detects pair-level
+Investigation candidates, temporally confirms boundaries, and produces lifecycle
+intervals. Startup-active recordings and close/no-ticket/reopen sequences are
+supported in the representative real-video validation set. Thresholds remain
+provisional; aircraft identity and content extraction are later work.
 
-The visual foundation now includes UI/layout mapping, ROI change metrics, map
-motion compensation, and pair-level/temporal ticket-scroll analysis, validated on
-real videos with cross-phenomenon checks. Investigation detection remains planned.
-See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md)
-for implementation details and provisional-threshold limitations.
+**Next planned: Phase 4 - Investigation Extraction & Adaptive Sampling.**
+
+See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
+Run the local Phase 3 closure validation with `uv run python scripts/validate_phase3.py`
+when the three validation recordings are available under `data/videos/`.
 
 ## Goals
 

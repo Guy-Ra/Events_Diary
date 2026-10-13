@@ -461,8 +461,7 @@ Phase 1 is complete because:
 ## Status
 
 **Phase 2: COMPLETE.** Subphases 2.1-2.5 are complete and closure validation
-has been reviewed and accepted. Next planned: **Phase 3 - Investigation Event
-Detection**. No Phase 3 Investigation decisions are implemented yet.
+has been reviewed and accepted. Phase 3 now builds on this completed evidence layer.
 
 ## Completed outcomes
 
@@ -535,79 +534,79 @@ raw/aligned metrics, ticket-scroll evidence, and active temporal scroll context
 for later inclusion/exclusion/context reasoning. Working thresholds remain
 provisional; these signals do not themselves decide Investigation Events.
 
-**Next: Phase 3 - Investigation Event Detection.** Its existing plan below remains
-planned work and will consume Phase 2 evidence rather than redefine these layers.
+Phase 3 consumes this completed evidence layer through separate Investigation
+signals, candidates, temporal confirmation, and lifecycle construction. Phase 4 is next.
 
 ---
 
 # 7. Phase 3 — Investigation Event Detection
 
-## Objective
+## Status
 
-Detect periods in which the operator investigates a selected aircraft.
+**Phase 3 - Investigation Event Detection: COMPLETE.** Subphases 3.1-3.5 are complete.
+Next planned: **Phase 4 - Investigation Extraction & Adaptive Sampling**.
 
-## State model
+## Completed outcomes
 
-```text
-NO_INVESTIGATION
-CANDIDATE_INVESTIGATION
-ACTIVE_INVESTIGATION
-```
+### 3.1 Investigation Signals & Rules - COMPLETE
 
-## Detection strategy
+Single-frame presence measures ticket structure independently of pair-level
+change. `InvestigationPresenceEvidence` and `InvestigationSignals` retain their
+separate meanings: current ticket appearance versus observed change/context.
+Pair aggregation reuses ROI metrics, aligned map residual, route replacement, and
+ticket-scroll APIs. Availability remains explicit; strength is not confidence.
+Thresholds remain provisional and based on a small real-video calibration set.
 
-Use:
+### 3.2 Candidate Detection - COMPLETE
 
-- strong evidence;
-- supporting evidence;
-- negative/explanatory evidence;
-- temporal stabilization.
+Presence transitions and meaningful ticket changes produce OPEN, SWITCH, CLOSE,
+or NONE hypotheses. OPEN needs multiple ticket-change signals; SWITCH needs
+bidirectional route replacement plus ticket change. Scroll is context rather than
+a global veto; generic map residual/motion does not vote positively.
 
-Strong candidate signals:
+### 3.3 Temporal Confirmation - COMPLETE
 
-```text
-header change
-origin/destination change
-aircraft detail change
-route change after map compensation
-```
+Offline seconds-based look-ahead confirms consistent presence with sufficient
+future coverage. Any later non-NONE candidate inside the provisional 0.7-second
+window supersedes the earlier candidate. This filters the validated short
+accidental opening without requiring repeated candidates or presence disappearance.
+NONE is neutral; short endings remain insufficient. Event time stays separate from
+confirmation time. No equivalent-candidate merging or online confirmation exists.
 
-Ticket scroll must not trigger a new Investigation.
+### 3.4 Investigation Lifecycle - COMPLETE
 
-## Required timestamps
+Confirmed semantic events build ordered Investigation intervals using candidate
+boundary times. Startup-active videos begin at video start without synthetic OPEN.
+NO + SWITCH starts a new interval; ACTIVE + OPEN replaces the current one. CLOSE
+creates inactive gaps; any final active interval ends at video end. Inactive CLOSE
+produces a diagnostic anomaly rather than a crash. Equal-time events preserve order.
 
-Store:
+### 3.5 Real-Video Validation & Phase 3 Closure - COMPLETE
 
-```text
-candidate_detected_at
-confirmed_at
-```
+`scripts/validate_phase3.py` reruns the complete production pipeline on all three
+manual recordings and writes a concise closure report and interval CSV. Opening
+and direct switch, startup-active footage, and close/no-ticket/reopen scenarios
+passed. Cross-layer checks verified presence, candidate/confirmation consistency,
+candidate-time boundaries, superseded-event exclusion, inactive gaps, interval
+ordering, and absence of unexpected lifecycle anomalies. Tests and Ruff passed.
 
-## End reasons
+The accidental OPEN was superseded by a later SWITCH and created no lifecycle
+interval. These are representative/manual checks, not an accuracy benchmark;
+working thresholds and the confirmation window remain provisional. Local videos
+and validation/debug artifacts remain ignored evidence, not committed assets.
 
-```text
-new_selection
-ticket_closed
-video_end
-```
+## Output and next phase
 
-## Tests
+Phase 3 outputs frozen Investigation intervals with chronological indexes,
+start/end times and reasons, plus diagnostic anomalies. Presence/change separation,
+pair hypotheses, temporal superseding, lifecycle construction, startup-active
+initialization, and close/no-ticket/reopen support are complete for the validated MVP.
+Aircraft identity, OCR, content extraction, and final canonical JSON remain later work.
 
-Include:
+The Jira high-level category **Visual Change & Interaction Analysis** (Phase 2.2-2.5
+and Phase 3) can now be marked COMPLETE; this does not change Jira automatically.
 
-```text
-single aircraft
-direct aircraft switch
-brief accidental click
-ticket scrolling
-map pan during Investigation
-video begins active
-video ends active
-```
-
-## Done when
-
-Detected Investigation boundaries match human review on representative examples.
+**Next: Phase 4 - Investigation Extraction & Adaptive Sampling.** Phase 4 has not begun.
 
 ---
 
