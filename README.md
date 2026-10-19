@@ -1,22 +1,28 @@
 # Events Diary
 
-Local visual intelligence system for analyzing Flightradar24 screen recordings using OCR, computer vision, and VLMs to generate structured aircraft event logs.
+Local project building toward structured aircraft event logs from Flightradar24
+screen recordings, using computer vision and planned OCR/VLM assistance.
 
 ## Project Status
 
-**Phase 3 - Investigation Event Detection is complete.**
+**Phase 4 - Investigation Extraction & Adaptive Sampling is COMPLETE.**
 
-The offline system measures single-frame ticket presence, detects pair-level
-Investigation candidates, temporally confirms boundaries, and produces lifecycle
-intervals. Startup-active recordings and close/no-ticket/reopen sequences are
-supported in the representative real-video validation set. Thresholds remain
-provisional; aircraft identity and content extraction are later work.
+The offline system supports video metadata/time sampling, FR24 UI regions and
+layout transforms, visual-change analysis, map motion compensation, ticket scroll
+detection, and Investigation lifecycle detection. It also builds adaptive
+Investigation sampling plans, detects stable ticket views, and composes unified
+evidence candidate timelines. Raw and effective presence remain distinct.
 
-**Next planned: Phase 4 - Investigation Extraction & Adaptive Sampling.**
+Validation is representative/manual and thresholds remain provisional. OCR, final
+frame selection, structured ticket extraction, and VLM logic are not implemented.
+
+**Next planned: Phase 5 - Role-Based Frame & Ticket-Section Selection (NOT STARTED).**
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
-Run the local Phase 3 closure validation with `uv run python scripts/validate_phase3.py`
-when the three validation recordings are available under `data/videos/`.
+Run local closure validation with `uv run python scripts/validate_phase3.py` and
+`uv run python scripts/validate_phase4.py` when the required local recordings are
+available under `data/videos/`. Phase 4 covers seven representative recordings;
+detailed measurements remain in local debug reports.
 
 ## Goals
 

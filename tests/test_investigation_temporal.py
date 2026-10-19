@@ -15,12 +15,59 @@ from events_diary.investigation_temporal import (
     CandidateTimelineEntry,
     ConfirmationStatus,
     ConfirmedInvestigationEvent,
+    bridge_transient_absence,
     confirm_investigation_candidates,
 )
 
 KINDS = (InvestigationCandidateKind.OPEN, InvestigationCandidateKind.SWITCH,
          InvestigationCandidateKind.CLOSE)
 NONE = InvestigationCandidateKind.NONE
+
+
+@pytest.mark.parametrize("timeline,expected", [
+    ([], ()),
+    ([(0, True), (0.1, False), (0.2, True)], (True, True, True)),
+    ([(0, True), (0.1, False), (0.25, True)], (True, True, True)),
+    ([(0, True), (0.1, False), (0.2, False), (0.3, True)], (True, False, False, True)),
+    ([(0, False), (0.1, True)], (False, True)),
+    ([(0, True), (0.1, False)], (True, False)),
+    ([(0, False), (0.1, False)], (False, False)),
+    ([(0, True), (0.1, True)], (True, True)),
+    ([(0, True), (0.1, False), (0.2, True), (0.3, False), (0.4, True)], (True,) * 5),
+    ([(0, True), (0.1, False), (0.2, True), (0.3, False), (0.5, True)], (True, True, True, False, True)),
+    ([(0, True), (1, False), (1.04, False), (1.14, True)], (True,) * 4),
+    ([(0, True), (0.1, False), (0.25001, True)], (True, False, True)),
+])
+def test_time_based_presence_bridge(timeline, expected):
+    snapshot = list(timeline)
+    assert bridge_transient_absence(timeline) == expected
+    assert timeline == snapshot
+
+
+@pytest.mark.parametrize("timeline,error", [
+    (None, TypeError), ("bad", TypeError), ([1], TypeError), ([(0,)], TypeError),
+    ([(0, 1)], TypeError), ([(True, True)], TypeError), ([("0", True)], TypeError),
+    ([(float("nan"), True)], ValueError), ([(float("inf"), True)], ValueError),
+    ([(-1, True)], ValueError), ([(0, True), (0, False)], ValueError),
+    ([(1, True), (0, False)], ValueError),
+])
+def test_presence_bridge_rejects_malformed_timeline(timeline, error):
+    with pytest.raises(error):
+        bridge_transient_absence(timeline)
+
+
+@pytest.mark.parametrize("bound,error", [
+    (True, TypeError), (None, TypeError), (".15", TypeError),
+    (-1, ValueError), (float("nan"), ValueError), (float("inf"), ValueError),
+])
+def test_presence_bridge_validates_bound(bound, error):
+    with pytest.raises(error):
+        bridge_transient_absence([], max_transient_absence_seconds=bound)
+
+
+def test_zero_bound_disables_presence_bridge():
+    assert bridge_transient_absence([(0, True), (0.1, False), (0.2, True)],
+                                   max_transient_absence_seconds=0) == (True, False, True)
 
 
 def _timeline(times, kinds, initial=False):

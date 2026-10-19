@@ -1,6 +1,12 @@
 """Phase 3.3 offline temporal confirmation of pair-level candidate hypotheses.
 
-Consume semantic consecutive-pair entries only: no video, CV, signal aggregation,
+The pure bridge_transient_absence helper preprocesses timestamped raw presence
+before candidate detection: only bounded absent runs <= provisional 0.15s become
+effectively present. Raw measurements remain unchanged; leading, trailing and
+long absences remain absent, so true CLOSE boundaries are never delayed.
+
+Confirmation consumes semantic consecutive-pair entries only: no video, CV,
+signal aggregation,
 or candidate detection occurs here. OPEN/SWITCH expect presence True; CLOSE expects
 False. NONE entries are neutral, and identical candidates need not repeat. ANY
 later non-NONE candidate through the inclusive look-ahead endpoint supersedes an
@@ -38,7 +44,61 @@ from events_diary.investigation_detection import (
 )
 
 CONFIRMATION_WINDOW_SECONDS = 0.7
+MAX_TRANSIENT_ABSENCE_SECONDS = 0.15  # Provisional: observed loading gap was 0.1s.
 _TIME_EPSILON = 1e-12
+
+
+def bridge_transient_absence(
+    timeline: Sequence[tuple[float, bool]], *,
+    max_transient_absence_seconds: float = MAX_TRANSIENT_ABSENCE_SECONDS,
+) -> tuple[bool, ...]:
+    """Return effective presence for a strictly ordered timestamped raw timeline.
+
+    An absent run must have PRESENT samples on both sides. Duration is recovery
+    timestamp minus first absent timestamp; bridge only if <= the time bound
+    (inclusive, with the existing 1e-12s boundary arithmetic tolerance). This is
+    offline look-ahead, not causal persistence; long and terminal absences retain
+    their first absent sample and therefore original CLOSE boundary. Inputs and
+    raw evidence are never mutated; empty input returns an empty tuple. A zero
+    bound disables bridging. No identity, replacement vote or event is inferred.
+
+    Reject malformed sequences/pairs, nonboolean states, bool/non-real timestamps
+    or bounds with TypeError; negative/non-finite bounds/times and non-increasing
+    timestamps with ValueError. Non-uniform sampling is interpreted in seconds.
+    """
+    bound = max_transient_absence_seconds
+    if isinstance(bound, bool) or not isinstance(bound, Real):
+        raise TypeError("max_transient_absence_seconds must be real, not bool.")
+    if not math.isfinite(bound) or bound < 0:
+        raise ValueError("max_transient_absence_seconds must be finite and non-negative.")
+    if not isinstance(timeline, Sequence) or isinstance(timeline, (str, bytes)):
+        raise TypeError("timeline must be a sequence of timestamp/presence pairs.")
+    previous = None
+    for pair in timeline:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise TypeError("each timeline entry must be a timestamp/presence pair.")
+        time, present = pair
+        if isinstance(time, bool) or not isinstance(time, Real) or not isinstance(present, bool):
+            raise TypeError("timestamps must be real, not bool; presence must be bool.")
+        if not math.isfinite(time) or time < 0:
+            raise ValueError("timestamps must be finite and non-negative.")
+        if previous is not None and time <= previous:
+            raise ValueError("timestamps must strictly increase.")
+        previous = time
+    effective = [pair[1] for pair in timeline]
+    index = 0
+    while index < len(timeline):
+        if timeline[index][1]:
+            index += 1
+            continue
+        start = index
+        while index < len(timeline) and not timeline[index][1]:
+            index += 1
+        if start > 0 and index < len(timeline) and bound > 0:
+            duration = timeline[index][0] - timeline[start][0]
+            if duration <= bound or math.isclose(duration, bound, rel_tol=0, abs_tol=_TIME_EPSILON):
+                effective[start:index] = [True] * (index - start)
+    return tuple(effective)
 
 
 @dataclass(frozen=True)

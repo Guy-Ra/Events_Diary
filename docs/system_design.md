@@ -475,18 +475,19 @@ Known limitations remain: provisional thresholds, possible rejected zoom pairs,
 interpolation residuals, active-motion rather than whole-interaction scroll state,
 frame-rate-dependent temporal context, and no automatic layout recovery. Phase 2
 is COMPLETE; Phase 3 now consumes these measurements in separate signal, candidate,
-confirmation, and lifecycle layers. Phase 4 is the next planned phase.
+confirmation, and lifecycle layers. Phase 4 consumes these intervals; Phase 5 is
+the next planned phase.
 
 ---
 
 ## Phase 3 — Investigation Event Detection
 
-Status: COMPLETE (3.1-3.5). Next planned: Phase 4 - Investigation Extraction &
-Adaptive Sampling. The completed offline pipeline is:
+Status: COMPLETE (3.1-3.6). The completed offline pipeline is:
 
 ```text
 video frames
 -> single-frame Investigation presence
+-> bounded transient-absence bridge / effective presence
 -> pair-level InvestigationSignals
 -> OPEN / SWITCH / CLOSE / NONE candidates
 -> temporal confirmation
@@ -504,9 +505,11 @@ measurements remain explicit.
 from pair-level changes ("What changed?"). Frozen `InvestigationPresenceEvidence`
 measures dark occupancy in `ticket_bottom_actions`, Canny edge occupancy in
 `ticket_scroll_body`, and diagnostic body light occupancy. The presence classifier
-requires bottom darkness and body structure; brightness is not required, allowing
-sampled dimmed/loading tickets to remain present. Presence does not mean content
-has finished loading or that a new Investigation began.
+requires bottom darkness and body structure; brightness is not required. Some
+dimmed/loading frames can nevertheless fail the raw structural thresholds.
+Effective presence can bridge a bounded transient absence without changing those
+raw measurements. Presence does not mean content has finished loading or that a
+new Investigation began.
 
 `analyze_investigation_pair()` orchestrates existing APIs into immutable
 `InvestigationSignals`. Header, aircraft image, and ticket body use grayscale
@@ -526,14 +529,15 @@ with A-to-B motion semantics and no TicketScrollState in InvestigationSignals.
 
 `investigation_detection.py` returns frozen `InvestigationCandidate` records with
 kind and deterministic reason. MEDIUM/HIGH header/image/body changes are meaningful;
-LOW/NOT_AVAILABLE do not vote. Presence is classified internally for both frames.
+LOW/NOT_AVAILABLE do not vote. Raw presence is classified internally for both
+frames; callers may supply effective presence for temporal interpretation.
 
 | Presence transition | Candidate rule |
 |---|---|
 | False -> False | NONE |
 | False -> True | OPEN with at least two meaningful ticket signals; otherwise NONE |
 | True -> False | CLOSE |
-| True -> True | SWITCH with route replacement and at least one meaningful ticket signal; otherwise NONE |
+| True -> True | SWITCH with route replacement and at least one meaningful ticket signal, or two during meaningful map motion; otherwise NONE |
 
 Scroll is context, not a global veto. Generic map residual, translation, scale,
 and rotation are not positive votes. A candidate is a pair hypothesis, not a
@@ -592,7 +596,7 @@ Phase 3 produces ordered frozen `InvestigationInterval` records containing a
 contiguous investigation index, start/end seconds, and start/end reasons, plus
 lifecycle anomaly diagnostics. Start reasons are VIDEO_STARTED_ACTIVE, OPEN, and
 SWITCH; end reasons are CLOSE, SWITCH, OPEN_REPLACEMENT, and VIDEO_END. These
-intervals are the semantic input for Phase 4's later evidence extraction and
+intervals are the semantic input for Phase 4's evidence preparation and
 adaptive sampling. They contain no aircraft identity, OCR content, selected frames,
 route data, confidence, or canonical final JSON.
 
@@ -612,49 +616,139 @@ for nominal index/FPS timestamps. Temporal coverage ends at the last sample;
 lifecycle VIDEO_END uses full nominal metadata duration. No identity, content
 extraction, automatic layout recovery, or online lifecycle is implemented.
 
-Phase 3 is COMPLETE. Phase 4 - Investigation Extraction & Adaptive Sampling is next.
+### Regression hardening (3.6)
+
+During meaningful valid map motion (translation magnitude greater than 1 pixel or
+scale delta greater than .01), SWITCH requires two of the three MEDIUM/HIGH
+header, aircraft-image, and ticket-body signals, alongside route replacement.
+Otherwise one ticket signal is sufficient. This reduces route-mask cross-talk
+during pan without imposing a blanket motion veto. Simultaneous real selection
+and substantial map motion still needs validation.
+
+The offline transient-absence bridge fills only bounded absent runs between
+present samples when recovery occurs within a provisional .15 seconds of the
+first absent sample. Leading, trailing, and longer absences remain unchanged.
+Raw presence evidence is retained separately; effective presence drives candidates,
+confirmation, and stable-view interpretation. Genuine very short close/reopen
+interactions remain an explicit validation gap. Regression footage preserves the
+real close boundary and aircraft replacement while removing a false pan SWITCH.
+
+Phase 3 is COMPLETE. Phase 4 consumes its lifecycle and effective presence.
 
 ---
 
 ## Phase 4 — Investigation Extraction & Adaptive Sampling
 
-Purpose:
-
-Once an Investigation is detected, recover richer evidence from the original video.
-
-The relevant interval should include context before and after the confirmed event.
-
-Conceptual regions:
+Status: COMPLETE (4.1-4.5). These stages prepare immutable evidence requests and
+annotations without selecting final frames. Phase 5 is next and NOT STARTED.
 
 ```text
-PRE_TRANSITION
-TRANSITION
-STABLE
-EXIT
+Phase 3 lifecycle / effective presence
+-> InvestigationInterval
+-> InvestigationWindow
+-> AdaptiveSamplingPlan
+-> TicketStableView
+-> EvidenceCandidate timeline
 ```
 
-Sampling should adapt to visual activity.
+### Investigation windows (4.1)
 
-Use denser sampling during:
+`investigation_window.py` preserves each lifecycle interval's core boundaries and
+index. Fixed provisional .5-second context before and after is clipped to video
+bounds. Windows may overlap and are not merged; contextual overlap does not
+change Investigation ownership. Window construction does not decode video.
 
-- aircraft selection transitions;
-- ticket loading;
-- ticket scrolling;
-- map/route transitions.
+### Adaptive sampling (4.2)
 
-Use sparser sampling during stable periods.
+`adaptive_sampling.py` consumes existing pair signals directly, without an
+ActivityLevel abstraction. Provisional dense triggers are detected ticket scroll,
+route visual change, MEDIUM/HIGH header, aircraft-image or ticket-body change,
+valid map translation magnitude greater than 1 pixel, and valid scale delta
+greater than .01. Map residual alone and rotation do not trigger dense sampling.
+Route visual change describes mask change, not aircraft identity, and can
+cross-trigger during map motion.
 
-Ticket scrolling should trigger dense sampling until the scroll settles.
+Trigger pairs expand by .5 seconds before and after, clip to the window, and
+merge when overlapping or touching. This interval merging supplies hysteresis.
+Sparse sampling uses a window-start-anchored 1 FPS grid outside inclusive dense
+intervals. Dense sampling uses an interval-start-anchored source-FPS grid and
+retains interval endpoints. Window start/end and Investigation start/end are
+always preserved as exact semantic anchors. Dense reasons retain deterministic
+order and provenance.
 
-Each stable ticket scroll position can become candidate evidence.
+Requested timestamps are not yet decoded frame identities. Floating-point
+boundary tolerance is absolute 1e-9 seconds; distinct semantic anchors remain
+distinct even when closer than this tolerance. Off-grid interval endpoints and
+anchors can add requests beyond a nominal duration-times-FPS count. No target
+reduction is imposed on prolonged real activity.
 
-The goal is not maximum frame count.
+### Stable ticket views (4.3)
 
-The goal is maximum information coverage with minimal redundancy.
+`ticket_stable_views.py` interprets continuous, consecutive pair evidence inside
+the Investigation core. Stability requires effective presence, no detected scroll,
+and LOW ticket-body change continuously for a provisional .5-second dwell. It
+adds no header/image gate or extra pixel threshold. Confirmation records the dwell
+boundary once sufficient observed coverage exists; no sample must fall exactly
+on that boundary.
+
+Every qualifying maximal span is retained, including intermediate reading pauses
+and ordinary stable tickets. Scroll, body change, or presence loss ends a span.
+An ongoing final span is right-censored (`end=None`) when observation ends before
+the known core end. Post-scroll provenance retains the prior scroll end and
+direction where available; short pauses below dwell do not create stable views.
+Mixed or unavailable direction stays unknown.
+
+Stable views complement dense moving evidence; they do not replace it. LOW body
+change does not establish semantic completeness, new content, or reading intent.
+Slow cumulative drift and reversals without a stable pause remain validation gaps.
+This stage does not perform OCR or select ticket sections.
+
+### Evidence candidate timeline (4.4)
+
+`evidence_candidate_timeline.py` composes each plan and its stable views without
+rerunning CV or decoding. Every requested timestamp becomes exactly one immutable
+candidate, preserving timestamp values and order. No timestamp is synthesized,
+ranked, filtered, or merged. Every candidate has exactly one sparse/dense sampling
+label; dense reasons, coincident anchor labels, and stable-view semantics coexist.
+
+Stable spans annotate existing requests, including their pre-confirmation portion.
+Right-censored spans end at the core boundary for association and cannot annotate
+trailing context. Membership must be unambiguous and every stable view must have
+candidate coverage. Invalid ownership, overlapping spans, inconsistent provenance,
+or uncovered views raise errors. Upstream windows, plans, and views remain intact.
+
+### Validation and Phase 5 contract (4.5)
+
+The closure validator reuses shared evaluation preparation and production APIs
+across representative lifecycle, scroll, pan, zoom, and combined recordings.
+It checks interval preservation, exact request-to-candidate correspondence,
+sampling/reason consistency, anchors, stable coverage, post-scroll provenance,
+moving-scroll retention, and Phase 3 regressions. Detailed per-recording results
+belong in local reports. This is manual representative validation, not a benchmark.
+
+Closure checks, required production evaluators, tests, and lint passed. Validation
+preserved the combined lifecycle, dense scrolling and pan, stable reading pauses,
+post-pan sparse coverage, and actual replacement anchors. Pan activity was
+translation-led; zoom showed scale activity with route-mask cross-talk and long
+dense coverage. No sampling or detection defaults were retuned.
+
+Phase 4 outputs Investigation windows, adaptive requested timestamps, stable-view
+annotations, and unified evidence candidates. Phase 5 receives these records for
+role-based frame and ticket-section selection. Final frame ranking/selection, OCR,
+semantic ticket deduplication, and final ticket-section extraction are not
+implemented. Frame resolution/decoding of requests remains separate downstream work.
+
+Thresholds remain provisional. Validation is mostly canonical 1920x1080, 10 FPS,
+and one FR24 environment; higher FPS and other layouts need validation. Automatic
+layout recovery is unavailable. Dense volume can remain high during prolonged
+activity. These limitations also retain the Phase 3 simultaneous-motion selection
+and short close/reopen gaps described above.
 
 ---
 
 ## Phase 5 — Role-Based Frame & Ticket-Section Selection
+
+Status: next planned phase; NOT STARTED.
 
 Purpose:
 

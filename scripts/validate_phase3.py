@@ -1,6 +1,6 @@
 """Phase 3 closure validation of the complete existing semantic pipeline.
 
-Decode every consecutive pair of all three manual validation recordings through
+Decode every consecutive pair of all four manual validation recordings through
 the existing candidate evaluator (presence -> signals -> candidates). Reuse the
 temporal entry adapter and production confirmation/lifecycle APIs. No detection
 logic or thresholds are duplicated, tuned, or inferred from golden expectations.
@@ -15,7 +15,7 @@ reimplementing the state machine. Checks do not correct or suppress any output.
 
 Write a concise report and one interval CSV under data/debug/map_motion. Source
 timing assumes constant FPS and canonical layout. Video end uses full metadata
-duration; temporal coverage ends at the last decoded sample. These three recordings
+duration; temporal coverage ends at the last decoded sample. These four recordings
 provide representative manual validation, not a benchmark. Only matching closure
 outputs are replaced; detailed existing evaluation artifacts remain untouched.
 No Phase 4 sampling/content extraction, identity, OCR, or Jira writes occur here.
@@ -47,6 +47,14 @@ from events_diary.video import read_video_metadata
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/debug/map_motion"
 EXPECTED = {
+    "combined_interaction": {
+        "initial": True,
+        "presence_runs": ((0, 185, True),),
+        "candidates": ((146, "switch", 14.7),),
+        "results": ((146, "confirmed", None),),
+        "intervals": ((0, 14.7, "video_started_active", "switch"),
+                      (14.7, 18.6, "switch", "video_end")),
+    },
     "investigation_switch": {
         "initial": False,
         "presence_runs": ((0, 15, False), (16, 80, True)),
@@ -152,7 +160,7 @@ def _validate_video(name, expected):
     checks = [
         ("all consecutive frame pairs analyzed", len(entries) == metadata.frame_count - 1),
         ("initial presence matches scenario", initial is expected["initial"]),
-        ("single-frame presence timeline matches scenario", len(states) == metadata.frame_count
+        ("effective presence timeline matches scenario", len(states) == metadata.frame_count
          and sum(end - start + 1 for start, end, _ in expected["presence_runs"]) == len(states)
          and all(all(state is present for state in states[start:end + 1])
                  for start, end, present in expected["presence_runs"])),
@@ -201,6 +209,10 @@ def _validate_video(name, expected):
         checks.append(("closed-to-final-switch gap remains inactive", all(
             max(interval.start_time_seconds, 3.8) >= min(interval.end_time_seconds, 7.6)
             for interval in intervals)))
+    if name == "combined_interaction":
+        checks.append(("only loading frame146 is bridged; raw evidence retained",
+                       [row["frame_b"] for row in measured
+                        if row["raw_present_after"] != row["present_after"]] == [146]))
     passed = all(ok for _, ok in checks)
     lines = [f"\n{name}: {'PASS' if passed else 'FAIL'}",
              (f"  {metadata.width}x{metadata.height}, {metadata.fps:g} FPS, "
@@ -230,6 +242,13 @@ def _validate_video(name, expected):
                          "end_time_seconds": interval.end_time_seconds, "duration_seconds": duration,
                          "start_reason": interval.start_reason.value, "end_reason": interval.end_reason.value})
     lines.extend(f"  Anomaly: {anomaly}" for anomaly in anomalies)
+    if name == "combined_interaction":
+        lines.append("  Raw/effective presence around replacement (raw fractions unchanged):")
+        for row in measured:
+            if 14.4 <= row["time_b"] <= 14.9:
+                lines.append(f"    {row['time_b']:.1f}s: raw={row['raw_present_after']}; "
+                             f"effective={row['present_after']}; dark={row['after_bottom_actions_dark_fraction']}; "
+                             f"edges={row['after_ticket_body_edge_fraction']}; light={row['after_ticket_body_light_fraction']}")
     lines.append("  Invariant/scenario checks:")
     lines.extend(f"    {'PASS' if ok else 'FAIL'}: {label}" for label, ok in checks)
     print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -254,7 +273,7 @@ def main():
         lines.extend(section)
         rows.extend(intervals)
     lines += [f"\nOVERALL: {'PASS' if overall else 'FAIL'}",
-              ("Limits: three canonical-layout recordings, constant-FPS source timing, provisional "
+              ("Limits: four canonical-layout recordings, constant-FPS source timing, provisional "
                "visual thresholds and window; no held-out benchmark, identity, OCR, or Phase 4 extraction.")]
     OUTPUT.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT / "phase3_validation_report.txt"

@@ -1,7 +1,8 @@
 """Phase 3.2 real-video evaluation of pair-level Investigation candidates.
 
-Evaluate every consecutive pair of the switch, startup-active, and close/reopen videos
-through existing single-frame presence, pair aggregation, and candidate APIs. No
+Evaluate every consecutive pair of the switch, startup-active, close/reopen and
+combined videos through raw presence, bounded offline bridging, pair aggregation
+and motion-aware candidate APIs. Raw fractions and booleans remain available. No
 candidate rules, thresholds, measurements, or production modules are modified.
 Candidates are hypotheses, not confirmed events or lifecycle transitions. Startup
 with a ticket already active intentionally has no synthetic OPEN pair. This tool
@@ -17,7 +18,7 @@ reporting only; they do not affect candidate classification. Index/FPS times ass
 constant source FPS. Presence runs and candidate spacing are retrospective display
 statistics only. "Settled" below means the first subsequent all-LOW ticket pair
 with unchanged presence, not a duration requirement or confirmation algorithm.
-Results concern three manual recordings, not a benchmark.
+Results concern four manual recordings, not a benchmark.
 
 Paths resolve from the repository. Outputs under investigation_candidates replace
 matching CSV/report files on rerun, preserving unrelated artifacts. Decode/layout,
@@ -38,51 +39,78 @@ from events_diary.investigation_signals import (
     estimate_investigation_presence,
     is_investigation_present,
 )
+from events_diary.investigation_temporal import (
+    CandidateTimelineEntry,
+    bridge_transient_absence,
+)
 from events_diary.video import read_video_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/debug/map_motion/investigation_candidates"
-SOURCES = ("investigation_switch", "investigation_started_active", "investigation_close_reopen")
+SOURCES = ("investigation_switch", "investigation_started_active", "investigation_close_reopen", "combined_interaction")
+
+
+def _measure_timeline(path, metadata, config):
+    """Share the measured raw -> bridged -> candidate pipeline across evaluators.
+
+    Keep each immutable raw evidence/signal record and only the previous pixel
+    frame. Bridge the complete raw boolean timeline offline before detection.
+    Existing confirmation/lifecycle consumers receive effective presence while
+    raw fractions remain available separately for debugging.
+    """
+    presences, signals, previous = [], [], None
+    for index, frame in _sequential_frames(path, metadata, config):
+        presences.append(estimate_investigation_presence(frame, config))
+        if previous is not None:
+            signals.append(analyze_investigation_pair(previous, frame, config))
+        previous = frame
+        if index and index % 25 == 0:
+            print(f"  {path.name}: {index}/{metadata.frame_count - 1} pairs", flush=True)
+    if not signals:
+        raise ValueError(f"No consecutive pairs decoded: {path}")
+    effective = bridge_transient_absence([(i / metadata.fps, is_investigation_present(p))
+                                         for i, p in enumerate(presences)])
+    entries = []
+    for index, signal in enumerate(signals):
+        candidate = detect_investigation_candidate(presences[index], presences[index + 1], signal,
+            effective_presence_before=effective[index], effective_presence_after=effective[index + 1])
+        entries.append(CandidateTimelineEntry(index, index / metadata.fps, (index + 1) / metadata.fps,
+                                             effective[index], effective[index + 1], candidate))
+    return presences, signals, entries
 
 
 def _evaluate(path, metadata, config):
-    """Return rows from production APIs on every pair, without caching decisions.
-
-    Presence is measured separately for A and B as specified. Only the previous
-    full frame is retained; nominal timestamps are based on metadata FPS.
-    """
-    rows, previous = [], None
-    for index, frame in _sequential_frames(path, metadata, config):
-        if previous is not None:
-            before = estimate_investigation_presence(previous, config)
-            after = estimate_investigation_presence(frame, config)
-            signals = analyze_investigation_pair(previous, frame, config)
-            candidate = detect_investigation_candidate(before, after, signals)
-            row = {"frame_a": index - 1, "frame_b": index,
-                   "time_a": (index - 1) / metadata.fps, "time_b": index / metadata.fps,
-                   "present_before": is_investigation_present(before),
-                   "present_after": is_investigation_present(after),
-                   "candidate_kind": candidate.kind.value, "candidate_reason": candidate.reason}
-            for label, signal in (("header", signals.header_change),
-                                  ("aircraft_image", signals.aircraft_image_change),
-                                  ("ticket_body", signals.ticket_body_change)):
-                row[f"{label}_strength"] = signal.strength.value
-                row[f"{label}_cpr"] = signal.cpr
-            route = signals.route_selection_evidence
-            row.update(route_selection_change=signals.route_selection_change,
-                       route_evidence_valid=route.valid,
-                       route_added_fraction=route.added_fraction,
-                       route_removed_fraction=route.removed_fraction,
-                       route_changed_fraction=route.changed_fraction,
-                       ticket_scroll_detected=signals.ticket_scroll_detected,
-                       map_residual_strength=signals.map_residual_change.strength.value,
-                       map_motion_valid=signals.map_motion.valid)
-            for label, evidence in (("before", before), ("after", after)):
-                row.update({f"{label}_{key}": value for key, value in asdict(evidence).items()})
-            rows.append(row)
-        previous = frame
-    if not rows:
-        raise ValueError(f"No consecutive pairs decoded: {path}")
+    """Return rows retaining raw fractions/booleans and effective candidate presence."""
+    presences, measured_signals, entries = _measure_timeline(path, metadata, config)
+    rows = []
+    for entry, signals in zip(entries, measured_signals):
+        index = entry.pair_index + 1
+        before, after = presences[index - 1], presences[index]
+        candidate = entry.candidate
+        row = {"frame_a": index - 1, "frame_b": index,
+               "time_a": (index - 1) / metadata.fps, "time_b": index / metadata.fps,
+               "present_before": entry.present_before,
+               "present_after": entry.present_after,
+               "raw_present_before": is_investigation_present(before),
+               "raw_present_after": is_investigation_present(after),
+               "candidate_kind": candidate.kind.value, "candidate_reason": candidate.reason}
+        for label, signal in (("header", signals.header_change),
+                              ("aircraft_image", signals.aircraft_image_change),
+                              ("ticket_body", signals.ticket_body_change)):
+            row[f"{label}_strength"] = signal.strength.value
+            row[f"{label}_cpr"] = signal.cpr
+        route = signals.route_selection_evidence
+        row.update(route_selection_change=signals.route_selection_change,
+                   route_evidence_valid=route.valid,
+                   route_added_fraction=route.added_fraction,
+                   route_removed_fraction=route.removed_fraction,
+                   route_changed_fraction=route.changed_fraction,
+                   ticket_scroll_detected=signals.ticket_scroll_detected,
+                   map_residual_strength=signals.map_residual_change.strength.value,
+                   map_motion_valid=signals.map_motion.valid)
+        for label, evidence in (("before", before), ("after", after)):
+            row.update({f"{label}_{key}": value for key, value in asdict(evidence).items()})
+        rows.append(row)
     return rows
 
 
@@ -175,6 +203,7 @@ def _summary(name, metadata, rows):
         "investigation_switch": ((1.4, 1.7), (4.7, 5.0), (6.9, 7.0)),
         "investigation_started_active": ((2.1, 2.6),),
         "investigation_close_reopen": ((3.7, 4.1), (6.7, 7.9)),
+        "combined_interaction": ((9.6, 9.9), (14.4, 14.9)),
     }[name]
     lines.append("Known opening/switch/traffic neighborhoods (annotations only):")
     for start, end in windows:
@@ -208,7 +237,7 @@ def _summary(name, metadata, rows):
 
 
 def main():
-    """Write three candidate timelines and observational timing without tuning."""
+    """Write four candidate timelines and observational timing without tuning."""
     config = UIConfig()
     OUTPUT.mkdir(parents=True, exist_ok=True)
     lines = ["Phase 3.2 pair-level candidate evaluation",
@@ -226,7 +255,7 @@ def main():
             writer.writerows(rows)
         lines.extend(_summary(name, metadata, rows))
         print(f"CSV: {csv_path}", flush=True)
-    lines += [("\nLimitations: three manually recorded canonical-layout videos, provisional upstream "
+    lines += [("\nLimitations: four manually recorded canonical-layout videos, provisional upstream "
               "presence/change/route thresholds, no held-out validation. Missing/non-finite presence "
               "is classified absent by the existing API, so transient disappearance may create CLOSE. "
               "Route replacement may miss switches without sufficient added and removed route pixels. "

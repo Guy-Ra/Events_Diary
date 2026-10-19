@@ -29,12 +29,12 @@ def _presence(present):
 
 
 def _signals(strengths, route=False, scroll=False):
-    """Build existing immutable records with deliberately strong map context."""
+    """Build existing immutable records with non-moving map context by default."""
     changes = [ChangeSignal(strength, 100, 0.9) for strength in strengths]
     return InvestigationSignals(
         *changes, ChangeSignal(SignalStrength.HIGH, 100, 1),
         RouteSelectionChangeEvidence(True, None, 0.1, 0.1, 0.1, 0.1, 0.2), route,
-        MapMotionEstimate(valid=True, dx=100, dy=-100, scale=1.5, rotation_degrees=2),
+        MapMotionEstimate(valid=True, dx=0, dy=0, scale=1, rotation_degrees=2),
         TicketScrollEvidence(0, 0, 0, 0, 100, 1, 0, 0, 0, -20, 1), scroll)
 
 
@@ -113,3 +113,52 @@ def test_wrong_input_types_propagate():
         detect_investigation_candidate(_presence(True), _presence(True), None)
     with pytest.raises(TypeError, match="InvestigationPresenceEvidence"):
         detect_investigation_candidate(None, _presence(True), _signals([SignalStrength.LOW] * 3))
+
+
+@pytest.mark.parametrize("motion,moving", [
+    (MapMotionEstimate(valid=True, dx=2, dy=0, scale=1), True),
+    (MapMotionEstimate(valid=True, dx=0.8, dy=0.8, scale=1), True),
+    (MapMotionEstimate(valid=True, dx=1, dy=0, scale=1), False),
+    (MapMotionEstimate(valid=True, dx=0, dy=0, scale=1.02), True),
+    (MapMotionEstimate(valid=True, dx=0, dy=0, scale=0.98), True),
+    (MapMotionEstimate(valid=True, dx=0, dy=0, scale=1.01), False),
+    (MapMotionEstimate(valid=True, dx=0, dy=0, scale=0.99), False),
+    (MapMotionEstimate(valid=False, dx=100, dy=100, scale=2), False),
+    (MapMotionEstimate(valid=True, dx=None, dy=None, scale=None), False),
+    (MapMotionEstimate(valid=True, dx=float("nan"), dy=float("inf"), scale=float("nan")), False),
+])
+@pytest.mark.parametrize("votes", [0, 1, 2, 3])
+@pytest.mark.parametrize("route", [False, True])
+def test_motion_aware_switch_requires_two_votes_only_during_motion(motion, moving, votes, route):
+    strengths = [SignalStrength.MEDIUM] * votes + [SignalStrength.LOW] * (3 - votes)
+    signals = replace(_signals(strengths, route=route), map_motion=motion)
+    result = detect_investigation_candidate(_presence(True), _presence(True), signals)
+    assert (result.kind is InvestigationCandidateKind.SWITCH) == (route and votes >= (2 if moving else 1))
+
+
+@pytest.mark.parametrize("before,after,expected", [
+    (False, True, InvestigationCandidateKind.OPEN),
+    (True, False, InvestigationCandidateKind.CLOSE),
+    (False, False, InvestigationCandidateKind.NONE),
+])
+def test_motion_does_not_change_open_close_rules(before, after, expected):
+    signals = replace(_signals([SignalStrength.MEDIUM] * 2 + [SignalStrength.LOW], route=True),
+                      map_motion=MapMotionEstimate(valid=True, dx=20, dy=0, scale=1.2))
+    assert detect_investigation_candidate(_presence(before), _presence(after), signals).kind is expected
+
+
+def test_effective_presence_keeps_raw_evidence_and_recovers_switch():
+    raw_before, raw_after = _presence(False), _presence(True)
+    signals = _signals([SignalStrength.HIGH] * 3, route=True)
+    snapshot = (replace(raw_before), replace(raw_after), replace(signals))
+    assert detect_investigation_candidate(raw_before, raw_after, signals).kind is InvestigationCandidateKind.OPEN
+    assert detect_investigation_candidate(raw_before, raw_after, signals,
+        effective_presence_before=True, effective_presence_after=True).kind is InvestigationCandidateKind.SWITCH
+    assert (raw_before, raw_after, signals) == snapshot
+
+
+@pytest.mark.parametrize("value", [0, 1, "true", float("nan")])
+def test_effective_presence_rejects_nonboolean_overrides(value):
+    with pytest.raises(TypeError, match="effective presence"):
+        detect_investigation_candidate(_presence(True), _presence(True), _signals([SignalStrength.LOW] * 3),
+                                      effective_presence_after=value)
