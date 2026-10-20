@@ -761,49 +761,65 @@ Phase 6 requires explicit review/approval of this closure.
 
 # 10. Phase 6 — OCR + Complete Ticket Extraction
 
-Status: NEXT PLANNED; NOT STARTED.
+Status: NEXT / NOT STARTED. Phase 6.1a implementation has not begun.
 
 ## Objective
 
-Convert ticket evidence into structured observations.
+Establish the OCR branch as source-specific evidence extraction, preserving the
+approved independent full-Investigation VLM branch and later fusion boundary.
 
-## Pipeline
-
-```text
-ticket evidence
-→ OCR
-→ parsing
-→ normalization
-→ cross-frame consensus
-→ structured ticket record
-```
-
-## Requirements
-
-- OCR semantic regions, not full screen;
-- retain raw OCR;
-- support multiple ticket scroll states;
-- distinguish static and dynamic fields;
-- preserve additional ticket fields;
-- use VLM only as targeted fallback.
-
-## Dynamic fields
-
-Examples:
+## Approved parallel architecture
 
 ```text
-altitude
-speed
-vertical speed
-track
-position
+Investigation / Phase 5 selection
+  +-> selected physical frames / precise ticket ROIs -> OCR observations
+  +-> full Investigation core clip + labeled guidance -> VLM observations
+OCR observations + VLM observations
+  -> Evidence Fusion -> cross-check / conflict handling -> structured output
 ```
 
-These may legitimately differ across timestamps.
+The branches can run in parallel and neither consumes the other's output as an
+execution prerequisite. Each branch can fail or be unavailable without discarding
+the other's evidence. VLM is not an OCR fallback; there is currently one
+full-Investigation VLM mode. Hardware/runtime feasibility will be calibrated later,
+without assumed GPU requirements, execution tiers or semantic degradation.
+
+## Planned OCR work
+
+- Read precise ticket ROIs from Phase 5 representative physical frames.
+- Preserve raw text/value, source-specific confidence, video/Investigation and
+  candidate/frame provenance, actual timestamp and ROI/bounding box as applicable.
+- Retain unreadable/missing evidence without inventing values.
+- Preserve static/dynamic field distinctions and links from parsing,
+  normalization or cross-frame consensus to original observations.
+- Produce evidence for later fusion, without treating OCR as final truth or
+  adding a VLM dependency to OCR execution.
+
+## Integration boundaries
+
+Phases 1–5 require no redesign and remain authoritative for boundaries, stable
+views, selection and visual timing. Future analysis context may package existing
+deterministic guidance without modifying upstream models.
+
+Future clip extraction uses the complete core by default and preserves
+clip-relative to original-video time mapping, actual extracted bounds and any
+time-base adjustment. Pre/post context must be explicit. VLM input includes
+temporal content between representatives, not a clip reconstructed from selections.
+Guidance remains distinct from what the VLM independently observed.
+
+Separate future OCR/VLM observations preserve provenance and confidence meaning.
+UNREADABLE, NOT_PRESENT, OBSERVED, EXPLICIT_NA, AMBIGUOUS, CONFLICT, INFERRED and
+ENRICHED remain distinct. Dynamic values at different times are not automatically
+conflicts. OCR confidence, VLM confidence and geometric/quality diagnostics are
+not interchangeable.
 
 ## Done when
 
-All readable ticket sections can be merged into one Investigation-level structured record with uncertainty and provenance preserved.
+Readable ticket sections across selected views can be combined into traceable
+Investigation-level OCR observations, preserving uncertainty and provenance for
+later fusion. Fusion and
+cross-checking retain disagreements rather than silently overwriting either
+source. This documentation does not implement OCR, VLM or their future models.
 
 ---
 
@@ -857,51 +873,45 @@ Direction is consistently correct on representative route cases and route ambigu
 
 ## Objective
 
-Resolve Investigation-level information from all evidence sources.
+Analyze the full Investigation core clip in the independent VLM branch and
+combine its source-specific observations with OCR and available map/route
+evidence through fusion, followed by cross-checking.
 
-## VLM responsibilities
+## VLM branch
 
-Potential tasks:
+The full clip provides temporal ticket, scroll and map/route context. Optional
+deterministic guidance includes boundaries, representative/stable-view timestamps
+and activity timing, explicitly labeled as supplied rather than model-observed.
+Preserve model/source identity, clip bounds, observed/interpreted values and
+available confidence; supporting times/ranges are recorded only when reliable.
 
-```text
-semantic enrichment
-difficult visual text
-livery/aircraft image interpretation
-ambiguous visual evidence
-final Investigation cross-check
-```
+OCR and VLM can run concurrently. Neither requires the other's output, and
+failure/unavailability in one branch preserves evidence from the other. There is
+one full-Investigation VLM mode; runtime feasibility is a later calibration task,
+not a reason to introduce GPU assumptions, tiers or semantic degradation.
 
-## Fusion priorities
+## Fusion and cross-check
 
-Examples:
+Agreement, OCR-only and VLM-only evidence retain their sources. Incompatible
+readings remain explicit conflicts; no silent overwrite or blanket source
+priority resolves them. Preserve observation status, confidence type, temporal
+support and provenance. Distinguish changed dynamic values at different times
+from conflicting readings of the same field/time. Inference and enrichment never
+become OBSERVED merely through fusion.
 
-```text
-observed > inferred
-multi-frame OCR > single visual guess
-route geometry > VLM direction guess
-observed origin/destination > inferred origin/destination
-```
+Cross-check fused evidence against the retained source streams and available
+deterministic/multi-view evidence. Report confirmed fields, suspected errors,
+conflicts and missed visible information. Shared guidance does not establish
+independent corroboration. Neither fusion nor cross-check rewrites Phase 1–5
+boundaries, stable views, representative selection or visual timing.
 
-## Final cross-check
+## Runtime feasibility and completion
 
-The model should flag:
-
-```text
-confirmed fields
-suspected errors
-conflicts
-missed visible information
-```
-
-It should not rewrite the canonical record freely.
-
-## Runtime adaptation
-
-Use model capability + hardware capability to determine which VLM tasks are enabled.
-
-## Done when
-
-VLM usage improves ambiguous cases without degrading deterministic high-confidence fields.
+Calibrate model/backend support, fidelity, memory and latency on representative
+full clips before choosing runtime requirements. Preserve explicit branch
+availability rather than silently changing input scope or semantic tasks.
+This phase is complete only when observations can be fused and cross-checked
+with agreement, conflicts, uncertainty and provenance preserved.
 
 ---
 

@@ -96,7 +96,8 @@ Unknown values are valid outputs.
 
 Computer vision, OCR, geometry, temporal reasoning, and explicit system rules should handle tasks that can be solved reliably without a VLM.
 
-A VLM is used selectively where it adds value.
+The future VLM branch independently analyzes the full Investigation core clip.
+It complements deterministic/OCR evidence without changing their responsibilities.
 
 ### 4.3 VLM as assistant, not authority
 
@@ -108,7 +109,9 @@ The VLM can help with:
 - ambiguous visual evidence;
 - final Investigation-level cross-checking.
 
-It must not freely rewrite the structured record.
+OCR and VLM produce separate observation streams for later fusion and cross-check.
+Neither branch directly overwrites the other's output or the structured record.
+Neither branch's execution depends on the other's output.
 
 ### 4.4 Modular implementation
 
@@ -171,7 +174,9 @@ MEDIUM
 LOW
 ```
 
-Avoid presenting fake numerical precision.
+Avoid presenting fake numerical precision. Preserve source-specific raw confidence
+where available, but do not treat OCR confidence, model-reported confidence,
+geometric response and raw image-quality diagnostics as interchangeable scores.
 
 ## 5.3 Provenance
 
@@ -187,7 +192,13 @@ AIRCRAFT_IMAGE
 SYSTEM_RULE
 ```
 
-Observed information always outranks unsupported inference.
+OCR and VLM observations remain separate until fusion. VLM provenance records the
+actual model/source identity; the example GEMMA labels above do not select a model.
+Supplied deterministic guidance is not independently VLM-observed evidence.
+Clip-level evidence may have only a time range; never invent frame precision.
+Observed information remains distinct from unsupported inference or enrichment.
+Fusion retains conflicting observations and their provenance rather than silently
+overwriting a source.
 
 ---
 
@@ -890,70 +901,102 @@ completeness. **Next: Phase 6 — OCR + Complete Ticket Extraction**, not starte
 
 ## Phase 6 — OCR + Complete Ticket Extraction
 
-Status: NEXT PLANNED; NOT STARTED.
+Status: NEXT / NOT STARTED. The following describes approved future architecture,
+not implemented OCR or VLM components. Phase 6 initially establishes the OCR
+branch while retaining the independent VLM branch and later fusion boundary.
 
-Purpose:
+### Approved parallel analysis boundary
 
-Extract all useful ticket information across multiple scroll states.
+After Investigation detection and Phase 5 representative selection, two
+independent consumers analyze the same Investigation:
 
-Workflow:
-
-```text
-stable ticket views
-→ section-aware OCR
-→ label/value parsing
-→ normalization
-→ multi-frame consensus
-→ complete Investigation ticket record
+```mermaid
+flowchart TD
+    I[Investigation and deterministic context]
+    I --> O[Selected physical frames and precise ticket ROIs]
+    I --> V[Full Investigation core clip]
+    O --> OO[OCR observations]
+    V --> VO[VLM observations]
+    OO --> F[Evidence Fusion]
+    VO --> F
+    F --> C[Cross-check and conflict handling]
+    C --> S[Structured output]
 ```
 
-### OCR strategy
+OCR and VLM can execute in parallel. Neither requires the other's output.
+Fusion consumes their separate evidence streams once each branch has completed
+or reported failure/unavailability. One failed branch must not discard evidence
+from the other; if both fail, missing/unreadable evidence remains explicit.
 
-OCR should operate on semantic ticket regions rather than the full screen.
+Phases 1–5 require no redesign. Their deterministic pipeline remains authoritative
+for Investigation boundaries, stable views, representative selection and visual
+activity timing. VLM interpretations do not rewrite those upstream decisions.
 
-Light preprocessing variants may be used where helpful.
+### OCR input and observations
 
-Raw OCR observations must be preserved.
+Follow the existing reference chain: RepresentativeSelection -> original
+EvidenceCandidate / MaterializedEvidenceCandidate -> physical source frame ->
+precise ticket ROI or sub-region. Preserve the selection's role: optional
+boundary/map context does not automatically become primary ticket OCR evidence.
+Use existing layout mapping; light crop preprocessing may be evaluated later.
 
-### Multi-frame consensus
+OCR performs precise text reading, including codes, registration, labels, numeric
+values and times. Preserve raw text/value, available OCR confidence, video and
+Investigation identity, candidate reference, physical frame index/actual timestamp,
+and ROI or bounding box where relevant. Candidate indexes are local to their
+supplied sequences and require that surrounding identity.
 
-A field may appear across multiple frames.
+Unreadable text stays unreadable; OCR must not invent missing values. Parsing,
+normalization and cross-frame consensus retain original observations and links
+to any derived results. The OCR branch produces evidence suitable for fusion,
+not an automatically authoritative final ticket record.
 
-Resolve it using evidence such as:
+### VLM input, guidance and observations
 
-```text
-OCR confidence
-frame quality
-ROI quality
-independent observation count
-agreement between frames
-```
+The VLM branch consumes the full short Investigation core clip, including temporal
+content between selected frames. There is currently one full-Investigation VLM
+mode. It is an independent consumer, not an OCR fallback or a selected-frame-only
+reader. Hardware/runtime feasibility will be calibrated later.
 
-Possible resolution states:
+Deterministic guidance may include Investigation index and boundaries,
+representative timestamps, stable/post-scroll views, scroll timing and map
+translation, scale or route-visual-change activity. Label guidance as supplied
+deterministic evidence, separately from the VLM's own observations. Padded/merged
+activity labels are context; exact motion timing must retain its underlying
+pair-level provenance when available.
 
-```text
-RESOLVED
-AMBIGUOUS
-UNAVAILABLE
-```
+VLM observations retain observed/interpreted values, available model confidence,
+model/source identity, Investigation identity, clip bounds and contextual support.
+Supporting timestamps/ranges are optional and must be reliable. A whole-clip
+observation must not receive fabricated frame-level precision. Interpretation,
+inference and enrichment remain distinguishable from direct observation.
 
-### Dynamic fields
+### Future clip extraction and analysis context
 
-Values such as altitude or speed may change over time.
+Clip extraction defaults to Investigation core boundaries, rather than the
+padded processing window. Any added pre/post context must be explicit. Preserve
+the mapping from clip-relative timestamps/frame positions back to original-video
+time, including actual extracted bounds and any encoding/time-base adjustment.
+Do not reconstruct the VLM clip from sparse representatives or silently trim
+content to accommodate runtime constraints.
 
-These should be retained with timestamps rather than incorrectly treated as conflicting static fields.
+A future analysis context may package video/Investigation identity, core bounds,
+representative candidate indexes, stable views and scroll/map/route metadata.
+It wraps existing outputs without changing upstream models. Clip extraction,
+context and modality observation models remain future additions, not code
+introduced by this architecture clarification.
 
-### VLM assistance
+### Cross-frame evidence and dynamic fields
 
-Use a VLM when:
+Cross-frame agreement can support OCR consensus, but repeated/derived evidence
+must not be assumed independent. Raw quality diagnostics are not confidence
+scores. Preserve UNREADABLE, NOT_PRESENT, OBSERVED, EXPLICIT_NA, AMBIGUOUS,
+CONFLICT, INFERRED and ENRICHED as distinct evidence meanings.
 
-- OCR confidence is poor;
-- parsing is difficult;
-- the value is visually readable but OCR fails.
-
-The VLM should receive targeted crops and constrained prompts.
-
-It is not automatically the authoritative source.
+Altitude, speed, vertical speed, track and position can change over time.
+Different values at different timestamps are not automatically conflicts.
+Fusion must compare field meaning and temporal support while retaining each
+source's observation; incomplete reading never establishes absence.
 
 ---
 
@@ -1046,77 +1089,53 @@ The VLM must not infer airports from “typical airline routes” unless visuall
 
 Purpose:
 
-Fuse deterministic evidence, OCR results, semantic enrichment, and VLM assistance into one Investigation-level record.
+Combine independent OCR and full-Investigation VLM observation streams, alongside
+available deterministic map/route evidence, into a provenance-preserving result.
+The approved branch inputs and execution boundary are described in Phase 6.
+This later layer does not make VLM execution depend on OCR success.
 
-### Field-specific priorities
+### Field evidence fusion
 
-Examples:
+Preserve source-specific observations before combining them. Agreement can
+strengthen support; an OCR-only or VLM-only value retains its source when the
+other branch is unreadable, failed or unavailable. Incompatible source readings
+remain an explicit conflict, not a silent overwrite. Two missing streams yield
+explicit missing/unreadable evidence rather than an invented value.
 
-```text
-flight text:
-multi-frame OCR consensus > single VLM read
+Evidence strength depends on direct support, temporal relevance and validated
+source behavior. Observed evidence is distinct from inferred/enriched evidence;
+deterministic geometry remains the basis for geometric measurements. No blanket
+OCR/VLM source ordering may erase a contradictory observation. Shared guidance
+or derived observations must not be counted as independent corroboration.
 
-direction:
-deterministic route geometry > VLM direction guess
-
-origin/destination:
-observed ticket value > map inference
-
-airline:
-observed text > semantic expansion from code > livery inference
-
-aircraft type:
-observed code/text > semantic expansion > image inference
-```
+Raw OCR confidence, model-reported confidence, geometric responses and image
+quality diagnostics are different quantities. Retain their source and meaning;
+do not average them or treat them as interchangeable probabilities. Any future
+mapping to user-facing qualitative confidence requires explicit calibration.
 
 ### Semantic enrichment
 
-The VLM can expand observed codes without changing the observed value.
+Code expansion or contextual interpretation retains the original observed value
+alongside the enriched result and its provenance. Enrichment does not convert
+inference into OBSERVED evidence. Missing values are not filled silently.
 
-Examples:
+Keep both the observed code and any enriched name. No local airport/airline
+dictionary is required for the initial MVP.
 
-```text
-EWR → Newark, New York
-B789 → Boeing 787-9
-```
+### Cross-check and conflict handling
 
-Keep both:
+After fusion, cross-check fields against retained OCR/VLM streams, temporal
+multi-view observations and available map/route evidence. Findings may include
+confirmed fields, suspected errors, conflicts and missed visible information.
+Distinguish legitimate time-varying values from simultaneous incompatible
+readings. Preserve value, source, confidence type, timestamp/range, agreement,
+conflict and provenance in downstream evidence.
 
-```text
-observed_code
-enriched_name
-```
-
-No local airport/airline dictionary is required for the initial MVP.
-
-### Conflict handling
-
-Rules:
-
-- observed beats inferred;
-- repeated independent evidence beats equivalent single evidence;
-- deterministic geometry beats VLM direction guessing;
-- strong contradictions remain visible as conflicts.
-
-### Final Investigation cross-check
-
-At the end of each Investigation, the VLM may receive:
-
-- selected ticket views;
-- route/map context;
-- structured observations;
-- targeted VLM results.
-
-It should return findings such as:
-
-```text
-confirmed_fields
-suspected_errors
-conflicts
-missed_visible_information
-```
-
-It should not freely regenerate the final JSON.
+The independent VLM branch receives the full core clip plus explicitly labeled
+deterministic guidance. Later cross-checking of fused evidence is a separate
+consumer; it does not retroactively turn supplied observations into VLM-observed
+facts or make OCR output a prerequisite for that branch. Cross-checking must not
+freely regenerate the canonical record or modify Phase 1–5 decisions.
 
 ---
 
@@ -1300,75 +1319,23 @@ They do not:
 
 # 8. Hardware and Model Adaptation
 
-The runtime should adapt to both the machine and the selected model.
+Hardware/runtime feasibility will be calibrated later using representative full
+Investigation clips. Existing runtime inspection does not prescribe a backend,
+GPU requirement or semantic execution policy.
 
-Conceptual relationship:
+There is currently one full-Investigation VLM mode. No light/medium/full tiers,
+hardware-based task selection or hardware-driven semantic degradation are
+approved. A GPU is not assumed mandatory. Future measurements should establish
+model/backend compatibility, fidelity, memory, latency and supported clip lengths
+before any runtime requirements are set.
 
-```text
-HardwareProfile + ModelProfile → ExecutionProfile
-```
+Do not infer capability from model name or parameter count alone; evaluate the
+actual model/backend against the approved full-clip contract.
 
-## HardwareProfile
-
-Possible information:
-
-```text
-GPU available
-GPU name
-VRAM
-system RAM
-CPU
-```
-
-## ModelProfile
-
-Capability-oriented description:
-
-```text
-visual input
-visual text reading
-semantic enrichment
-structured output reliability
-livery interpretation
-multi-image reasoning
-map reasoning
-full-Investigation cross-check
-```
-
-Do not infer capability only from model name or parameter count.
-
-A compact fixed capability test suite should be run when adding a new model/backend.
-
-## Complexity ladder
-
-Example task difficulty:
-
-```text
-1. semantic enrichment
-2. visual crop reading
-3. aircraft/livery interpretation
-4. multi-image reasoning
-5. complex map/geographic inference
-```
-
-Unsupported capabilities should degrade gracefully.
-
-Examples:
-
-```text
-full-context VLM cross-check
-→ targeted single-image VLM
-→ deterministic OCR/CV
-```
-
-or:
-
-```text
-exact airport inference
-→ regional inference
-→ direction only
-→ UNKNOWN
-```
+If a branch cannot execute, report its failure/unavailability explicitly and
+preserve the other branch's evidence. Do not silently substitute selected images,
+remove clip content or lower semantic scope. Any future change to the approved
+single-mode architecture requires empirical justification and explicit review.
 
 ---
 
@@ -1459,7 +1426,7 @@ ticket scrolling
 OCR
 computer vision
 route geometry
-selective VLM assistance
+independent full-Investigation VLM analysis and evidence fusion
 Investigation detection
 aircraft revisit/entity matching
 structured JSON
