@@ -26,11 +26,14 @@ these recordings only; provisional production defaults are not tuned here.
 """
 
 import csv
+import sys
 from pathlib import Path
+
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import cv2
 import numpy as np
-from validate_phase2 import _sequential_frames
 
 from events_diary.config import UIConfig
 from events_diary.investigation_signals import (
@@ -38,8 +41,9 @@ from events_diary.investigation_signals import (
     is_investigation_present,
 )
 from events_diary.video import read_video_metadata
+from scripts.validation.validate_phase2 import _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/investigation_presence"
 SOURCES = {
     "started_active": ROOT / "data/videos/investigation_started_active_test.mp4",

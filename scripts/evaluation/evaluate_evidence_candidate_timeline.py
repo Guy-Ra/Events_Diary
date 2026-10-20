@@ -21,15 +21,18 @@ OCR, decoded frame indexes, semantic deduplication or Phase 5 selection occurs.
 """
 
 import csv
+import sys
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from evaluate_ticket_stable_views import SOURCES, _build_contexts
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.evidence_candidate_timeline import build_evidence_candidate_timeline
+from scripts.evaluation.evaluate_ticket_stable_views import SOURCES, _build_contexts
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/evidence_candidate_timeline"
 
 

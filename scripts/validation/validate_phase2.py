@@ -26,8 +26,10 @@ import sys
 from pathlib import Path
 from statistics import median
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import cv2
-from evaluate_map_motion_video import _format_value, _validate_layout
 
 from events_diary.config import UIConfig
 from events_diary.map_motion import estimate_map_motion
@@ -38,8 +40,9 @@ from events_diary.ticket_scroll import (
     is_vertical_scroll_evidence,
 )
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_map_motion_video import _format_value, _validate_layout
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = ROOT / "data/debug/map_motion/phase2_validation_report.txt"
 
 

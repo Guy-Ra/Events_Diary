@@ -26,17 +26,21 @@ temporary wrappers are suitable only for standalone, single-threaded development
 use, not concurrent production execution. No new dependencies are required.
 """
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import cv2
 import numpy as np
-from evaluate_change_metrics import DATA_DIR, load_image_pair
 
 from events_diary import map_motion
 from events_diary.config import UIConfig
+from scripts.calibration.evaluate_change_metrics import DATA_DIR, load_image_pair
 
-OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data/debug/map_motion"
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data/debug/map_motion"
 
 
 def _capture_estimate(

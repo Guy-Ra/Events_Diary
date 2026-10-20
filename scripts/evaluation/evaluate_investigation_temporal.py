@@ -17,11 +17,13 @@ initialization, identity, confidence, temporal merging, or streaming logic occur
 """
 
 import csv
+import sys
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from evaluate_investigation_candidates import SOURCES, _evaluate
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.config import UIConfig
 from events_diary.investigation_detection import (
@@ -34,8 +36,9 @@ from events_diary.investigation_temporal import (
     confirm_investigation_candidates,
 )
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_investigation_candidates import SOURCES, _evaluate
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/investigation_temporal"
 
 

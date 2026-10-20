@@ -16,6 +16,9 @@ reuse the public image-array APIs without adding preprocessing or interpretation
 import sys
 from pathlib import Path
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import cv2
 import numpy as np
 
@@ -23,7 +26,7 @@ from events_diary.change_metrics import compute_changed_pixel_ratio, compute_mad
 from events_diary.config import UIConfig
 from events_diary.layout import LayoutKind, classify_layout, map_roi_to_frame
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data/sanity_frames/change_metrics"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data/sanity_frames/change_metrics"
 SCENARIOS = {
     "no_change": (DATA_DIR / "no_change_01_a.png", DATA_DIR / "no_change_01_b.png"),
     "small_update": (DATA_DIR / "small_update_01_a.png", DATA_DIR / "small_update_01_b.png"),

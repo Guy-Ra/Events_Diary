@@ -443,7 +443,7 @@ start/end timestamps, or Investigation decisions are created.
 
 ### Real-video validation and closure (2.5)
 
-`scripts/validate_phase2.py` exercises both pipelines on consecutive decoded frames
+`scripts/validation/validate_phase2.py` exercises both pipelines on consecutive decoded frames
 at source FPS, with explicit EOF/count/layout validation.
 Manual evaluation scripts retain source indices and nominal index/FPS times;
 constant-FPS assumptions and metadata-count limitations remain explicit.
@@ -475,8 +475,8 @@ Known limitations remain: provisional thresholds, possible rejected zoom pairs,
 interpolation residuals, active-motion rather than whole-interaction scroll state,
 frame-rate-dependent temporal context, and no automatic layout recovery. Phase 2
 is COMPLETE; Phase 3 now consumes these measurements in separate signal, candidate,
-confirmation, and lifecycle layers. Phase 4 consumes these intervals; Phase 5 is
-the next planned phase.
+confirmation, and lifecycle layers. Phase 4 prepares evidence requests; Phase 5
+materializes and selects those requests for downstream consumers.
 
 ---
 
@@ -640,7 +640,8 @@ Phase 3 is COMPLETE. Phase 4 consumes its lifecycle and effective presence.
 ## Phase 4 — Investigation Extraction & Adaptive Sampling
 
 Status: COMPLETE (4.1-4.5). These stages prepare immutable evidence requests and
-annotations without selecting final frames. Phase 5 is next and NOT STARTED.
+annotations without selecting final frames. The completed Phase 5 consumes them
+for physical resolution and reference selection.
 
 ```text
 Phase 3 lifecycle / effective presence
@@ -734,9 +735,10 @@ dense coverage. No sampling or detection defaults were retuned.
 
 Phase 4 outputs Investigation windows, adaptive requested timestamps, stable-view
 annotations, and unified evidence candidates. Phase 5 receives these records for
-role-based frame and ticket-section selection. Final frame ranking/selection, OCR,
-semantic ticket deduplication, and final ticket-section extraction are not
-implemented. Frame resolution/decoding of requests remains separate downstream work.
+physical materialization and role-based representative selection. Those operations
+are implemented separately in Phase 5; Phase 4 requests and annotations remain
+unchanged. OCR, semantic ticket deduplication and final ticket-section extraction
+remain future work.
 
 Thresholds remain provisional. Validation is mostly canonical 1920x1080, 10 FPS,
 and one FR24 environment; higher FPS and other layouts need validation. Automatic
@@ -748,83 +750,147 @@ and short close/reopen gaps described above.
 
 ## Phase 5 — Role-Based Frame & Ticket-Section Selection
 
-Status: next planned phase; NOT STARTED.
-
-Purpose:
-
-Select evidence frames based on what downstream tasks need.
-
-There is no single universal “best frame”.
-
-Possible evidence roles:
+Status: COMPLETE (5.1-5.4). Phase 5 turns Phase 4's immutable candidate timeline
+into a bounded set of visual evidence references. It does not interpret ticket
+text or establish semantic ticket identity.
 
 ```text
-ticket_header
-ticket_route_times
-ticket_aircraft_details
-ticket_flight_state
-ticket_data_source
-ticket_additional_section
-route
-aircraft_image
-context
+EvidenceCandidate timeline + window / sampling plan / stable views
+-> physical frame materialization (5.1)
+-> reference-only representative selection (5.3)
+   + optional ticket-view measurements for diagnostics (5.2)
+-> downstream evidence references with explainable reasons
 ```
 
-### Ticket evidence
+### Frame materialization (5.1)
 
-Ticket frame quality can consider:
+`frame_materialization.py` preserves one result per candidate, including duplicate
+requests and explicit failures. Original requested timestamps remain unchanged.
+Under the constant-FPS contract, frame i has time i/FPS. Requests resolve to the
+nearest physical source-frame index, with halfway ties going to the later frame.
+Index-based seek/read verifies the decoded position rather than relying on
+millisecond-seek rounding.
 
-- sharpness;
-- UI stability;
-- readable content;
-- completeness;
-- absence of transition blur.
+An exact nominal-duration request is explicitly `video_end_adjusted` and targets
+the last decodable frame, searching backward only for that endpoint. Ordinary
+failed reads remain `unresolved`; invalid requests and contradictory decoder
+metadata fail visibly. Actual timestamp and requested timestamp remain distinct.
 
-N/A is valid content and must not be treated as failed loading.
+Frozen `MaterializedEvidenceCandidate` records contain the original candidate,
+resolution status, physical index/time, and scalar diagnostics, without image
+arrays. A context-managed `VideoFrameResolver` supplies separate short-lived
+read-only image handles through a bounded operation-local LRU cache. Repeated
+operations can share that resolver; closing it releases its decoder and cache.
+Callers retaining external handles remain responsible for their image memory.
 
-Ticket selection should maximize section coverage.
+Quality diagnostics are raw grayscale Laplacian variance, mean intensity and
+population standard deviation on the mapped `UIConfig.ticket_scroll_body` ROI,
+without resizing or normalization. No quality score, loading inference, filtering
+or selection occurs during materialization.
 
-### Route evidence
+### Ticket-view similarity measurements (5.2)
 
-Consider:
+`ticket_view_similarity.py` compares only `ticket_scroll_body`. Raw grayscale MAD
+and Changed Pixel Ratio remain available for valid crops, including rejected
+alignment attempts. MAD measures pixel differences, not scrolling or ticket
+identity; loading, replacement and live values can all change it.
 
-- route visibility;
-- selected aircraft visibility;
-- viewport coverage;
-- map stability;
-- route clipping.
+Optional Hann-windowed phase correlation estimates A-to-B dx/dy and response.
+Only inverse vertical translation is applied to B; horizontal motion is a
+diagnostic and validity guard. Conservative configurable guards check response,
+lateral motion, vertical displacement and supported overlap. Integer shifts use
+corresponding rows; fractional shifts use fully supported warped pixels.
+Overlap-aware aligned MAD/CPR are available only for accepted fits. Rejection
+retains raw measurements and finite motion diagnostics with a technical reason.
 
-Preserve meaningful diversity, such as:
+Frozen comparison records hold caller-specified indexes and scalar measurements.
+Batches compare only supplied pairs and reuse bounded frame access. Alignment is
+supporting evidence, not truth: repetitive/large shifts can alias, and unnecessary
+interpolation can worsen a stable comparison. There is no duplicate, new-section,
+replacement or semantic classifier. Similarity does not remove stable views and
+is not required by the production selector.
 
-- a wider route view;
-- a closer route view.
+### Role-based representative selection (5.3)
 
-### Aircraft image evidence
+`representative_selection.py` is pure: it consumes one Investigation's window,
+sampling plan, original candidates, matching materializations and stable views.
+It validates correspondence without changing upstream requests or running CV.
+Priority is ownership -> role/coverage -> stability -> local quality.
 
-Consider:
+Exactly one primary reference represents each stable view. It must have that
+view's existing annotation, lie physically within its stable span, and belong to
+the half-open Investigation core [start, end). A shared switch endpoint belongs
+to the incoming Investigation. Neighboring pre/post window context and anchor
+status alone cannot establish primary ownership.
 
-- image loaded;
-- sharpness;
-- crop completeness;
-- stability;
-- occlusion;
-- placeholder detection.
+Prefer candidates whose requested and physical times are at/after stable
+confirmation, choosing the nearest physical time. Only effectively tied temporal
+distances use higher sharpness, then contrast, then deterministic request/index
+order. Brightness is diagnostic, never ranked. If no eligible post-confirmation
+candidate exists, choose the nearest eligible in-span reference and mark
+`stable_confirmation_fallback`. No eligible reference for a declared view is a
+structural error; an Investigation without stable views may have no primary
+ticket references.
 
-A placeholder image means image-based aircraft/livery inference is unavailable.
+Every post-scroll stable view remains represented, including returns to earlier
+positions. Neither similarity nor a global sharpness ranking removes views.
+There is no fixed global top-K.
 
-### Context evidence
+Map/route evidence defaults on and remains separate from primary ticket evidence.
+One owned resolved physical-time midpoint represents each contiguous run of
+`route_visual_change`, `map_translation` or `map_scale_change` candidate labels.
+A nonmatching candidate or gap greater than one source-frame period separates
+runs. The representative carries the union of map/route reasons in its run.
+These padded/merged metadata runs can include quiet frames and are not a new
+semantic map-event detector; a midpoint need not show the final or extreme state.
 
-A context frame should show the Investigation in a broad, understandable way.
+Scroll provenance and boundary context default off. When enabled, scroll context
+uses one midpoint per corresponding metadata run; boundary context uses only
+existing resolved Investigation start/end anchors, potentially depicting a
+transition or the neighboring ticket. Window anchors alone are not selected.
+Context does not substitute for primary stable coverage.
 
-### Deduplication
+Frozen `RepresentativeSelection(candidate_index, selection_reasons)` objects are
+wrapped by `InvestigationSelection(investigation_index, selections)`. Indexes
+refer to the caller's per-Investigation sequences; timestamps, physical indexes,
+quality, images and full candidates stay upstream. Reasons merge once per index
+in canonical order: `stable_ticket`, `post_scroll_stable`,
+`stable_confirmation_fallback`, `map_activity`, `route_activity`,
+`scroll_provenance`, `investigation_boundary`. Results are chronological by
+requested time/index. Different candidate indexes resolving to one physical frame
+are reported rather than silently merged.
 
-Near-identical frames may be deduplicated using perceptual similarity such as pHash or SSIM.
+### Validation, limitations and downstream contract (5.4)
 
-However, ticket frames from different scroll positions must remain if they expose new content.
+The Phase 5 closure validator executes real lifecycle-to-selection integration
+with ticket-minimal, default map/route, and full-context configurations. It checks
+candidate preservation, physical endpoints, stable/post-scroll coverage,
+confirmation preference, ownership, deterministic ordering, merged reasons,
+bounded activity coverage and configuration monotonicity. Bounded similarity
+controls supplement selection checks; existing contact sheets support visual
+review. Unit tests, lint, Phase 3/4 regression validators and Phase 5 evaluators
+passed at closure. Detailed per-recording results belong in local reports.
+
+Validation is representative/manual, not a formal labeled selection benchmark.
+Current footage is mostly canonical 1920x1080 at 10 FPS in a known FR24 layout.
+Resolution assumes constant FPS; broader variable-FPS, codec/backend and layout
+validation remains open. Automatic layout recovery is unavailable and visual
+thresholds remain provisional. Stable detection does not prove loading
+completeness; live-value changes within one stable view may matter downstream.
+Return positions are not semantically collapsed. There is no OCR-based section
+semantics or map-image similarity, midpoint context may miss final/extreme map
+states, and similarity can alias on large/repetitive shifts.
+
+Phase 5 hands downstream consumers reference-only selections with original
+candidate, stable-view and materialization provenance available externally.
+Coverage describes visual evidence roles, not extracted fields or proven semantic
+completeness. **Next: Phase 6 — OCR + Complete Ticket Extraction**, not started.
 
 ---
 
 ## Phase 6 — OCR + Complete Ticket Extraction
+
+Status: NEXT PLANNED; NOT STARTED.
 
 Purpose:
 

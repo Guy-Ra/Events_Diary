@@ -23,12 +23,14 @@ not a benchmark or validation of scrolling, other layouts, or other recordings.
 """
 
 import csv
+import sys
 from collections import Counter
 from pathlib import Path
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import numpy as np
-from evaluate_map_motion_video import _validate_layout
-from validate_phase2 import _sequential_frames
 
 from events_diary.config import UIConfig
 from events_diary.investigation_signals import (
@@ -43,8 +45,10 @@ from events_diary.investigation_signals import (
     analyze_investigation_pair,
 )
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_map_motion_video import _validate_layout
+from scripts.validation.validate_phase2 import _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 VIDEO = ROOT / "data/videos/investigation_switch_test.mp4"
 OUTPUT = ROOT / "data/debug/map_motion/investigation_switch"
 THRESHOLDS = {

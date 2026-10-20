@@ -41,14 +41,16 @@ from one recording, not a benchmark or a calibrated semantic route-change signal
 """
 
 import csv
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from statistics import median
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import cv2
 import numpy as np
-from evaluate_map_motion_video import _format_value, _validate_layout
-from validate_phase2 import _intervals, _sequential_frames
 
 from events_diary.change_metrics import compute_changed_pixel_ratio, compute_mad
 from events_diary.config import UIConfig
@@ -63,8 +65,10 @@ from events_diary.ticket_scroll import (
     is_vertical_scroll_evidence,
 )
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_map_motion_video import _format_value, _validate_layout
+from scripts.validation.validate_phase2 import _intervals, _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 VIDEO_PATH = ROOT / "data/videos/investigation_switch_test.mp4"
 OUTPUT_DIR = ROOT / "data/debug/map_motion/investigation_switch"
 CSV_PATH = OUTPUT_DIR / "investigation_switch_video_evaluation.csv"

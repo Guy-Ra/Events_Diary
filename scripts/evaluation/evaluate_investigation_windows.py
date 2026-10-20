@@ -23,7 +23,11 @@ is introduced. Input/schema/production/I/O errors propagate.
 """
 
 import csv
+import sys
 from pathlib import Path
+
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.investigation_lifecycle import (
     InvestigationEndReason,
@@ -32,7 +36,7 @@ from events_diary.investigation_lifecycle import (
 )
 from events_diary.investigation_window import build_investigation_windows
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "data/debug/map_motion/phase3_validation_intervals.csv"
 CLOSURE_REPORT = ROOT / "data/debug/map_motion/phase3_validation_report.txt"
 OUTPUT = ROOT / "data/debug/map_motion/investigation_windows"

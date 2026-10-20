@@ -29,10 +29,12 @@ documentation updates, or Phase 4.3 behavior are introduced.
 
 import csv
 import math
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from validate_phase2 import _sequential_frames
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.config import UIConfig
 from events_diary.investigation_detection import (
@@ -53,8 +55,9 @@ from events_diary.investigation_temporal import (
     confirm_investigation_candidates,
 )
 from events_diary.video import read_video_metadata
+from scripts.validation.validate_phase2 import _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/lifecycle_regression_calibration"
 SOURCES = ("investigation_switch", "investigation_started_active",
            "investigation_close_reopen", "combined_interaction", "map_pan", "map_zoom")

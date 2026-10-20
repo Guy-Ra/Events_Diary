@@ -31,17 +31,21 @@ the report lists separate/combined pixel fractions. Visual suitability and false
 positives must be reviewed; no semantic conclusions are inferred from color alone.
 """
 
+import sys
 from pathlib import Path
+
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import cv2
 import numpy as np
-from evaluate_map_motion_video import _validate_layout
-from validate_phase2 import _sequential_frames
 
 from events_diary.config import UIConfig
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_map_motion_video import _validate_layout
+from scripts.validation.validate_phase2 import _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 VIDEO_PATH = ROOT / "data/videos/investigation_switch_test.mp4"
 OUTPUT_DIR = ROOT / "data/debug/map_motion/investigation_switch"
 FRAME_LABELS = {46: "before", 48: "switch", 49: "after"}

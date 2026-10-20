@@ -1,7 +1,7 @@
 """Phase 2.3 manual temporal evaluation of deterministic map-motion estimation.
 
 Evaluate every consecutive decoded source-frame pair in a supplied recording:
-uv run python scripts/evaluate_map_motion_video.py data/videos/map_zoom_test.mp4
+uv run python scripts/evaluation/evaluate_map_motion_video.py data/videos/map_zoom_test.mp4
 Temporally adjacent frames may retain
 more geographic overlap than the earlier distant screenshot pair, allowing the
 existing estimator's evidence to be inspected at source temporal density. This is
@@ -42,6 +42,9 @@ from dataclasses import asdict
 from pathlib import Path
 from statistics import median
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import cv2
 
 from events_diary.config import UIConfig
@@ -49,7 +52,7 @@ from events_diary.layout import LayoutKind, classify_layout
 from events_diary.map_motion import estimate_map_motion
 from events_diary.video import VideoMetadata, read_video_metadata
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FIELDS = (
     "pair_index", "frame_a_index", "frame_b_index", "time_a", "time_b", "valid",
     "dx", "dy", "scale", "rotation_degrees", "good_matches", "inliers",

@@ -4,7 +4,11 @@ Visualize configured Flightradar24 UI regions on a reference screenshot.
 This script is intended for manual UI-layout calibration and visual validation.
 """
 
+import sys
 from pathlib import Path
+
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import cv2
 

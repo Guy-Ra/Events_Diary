@@ -5,24 +5,34 @@ screen recordings, using computer vision and planned OCR/VLM assistance.
 
 ## Project Status
 
-**Phase 4 - Investigation Extraction & Adaptive Sampling is COMPLETE.**
+**Phase 5 - Role-Based Frame & Ticket-Section Selection is COMPLETE.**
 
-The offline system supports video metadata/time sampling, FR24 UI regions and
-layout transforms, visual-change analysis, map motion compensation, ticket scroll
-detection, and Investigation lifecycle detection. It also builds adaptive
-Investigation sampling plans, detects stable ticket views, and composes unified
-evidence candidate timelines. Raw and effective presence remain distinct.
+The offline system supports FR24 UI/layout mapping, visual-change and map-motion
+analysis, ticket scrolling, Investigation lifecycle detection, adaptive sampling,
+stable ticket views, and evidence candidate timelines. Raw and effective presence
+remain distinct.
 
-Validation is representative/manual and thresholds remain provisional. OCR, final
-frame selection, structured ticket extraction, and VLM logic are not implemented.
+Phase 5 provides the production flow:
+`EvidenceCandidate -> physical frame materialization -> ticket-view comparison
+-> representative selection`. Comparisons are supporting measurements; the pure
+selector does not require image access or similarity decisions. Selection retains
+one primary representative per stable ticket view and conservatively keeps every
+post-scroll view, with separate bounded map/route evidence and optional scroll
+provenance/boundary context. Evidence volume follows role coverage rather than a
+global frame quota.
 
-**Next planned: Phase 5 - Role-Based Frame & Ticket-Section Selection (NOT STARTED).**
+Validation is representative/manual, not a labeled benchmark. Thresholds remain
+provisional; stable views do not prove loading completeness. OCR, structured
+ticket extraction, semantic section classification, and VLM logic are not
+implemented.
+
+**Next planned: Phase 6 - OCR + Complete Ticket Extraction (NOT STARTED).**
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
-Run local closure validation with `uv run python scripts/validate_phase3.py` and
-`uv run python scripts/validate_phase4.py` when the required local recordings are
-available under `data/videos/`. Phase 4 covers seven representative recordings;
-detailed measurements remain in local debug reports.
+Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,
+`uv run python scripts/validation/validate_phase4.py`, and
+`uv run python scripts/validation/validate_phase5.py` when the required recordings
+are available under `data/videos/`. Detailed measurements stay in local reports.
 
 ## Goals
 

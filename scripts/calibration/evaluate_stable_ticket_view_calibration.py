@@ -40,11 +40,13 @@ Matching local outputs are replaced on rerun; unrelated work is preserved.
 
 import csv
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 from statistics import median
 
-from evaluate_investigation_candidates import _measure_timeline
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.adaptive_sampling import (
     SamplingSignalEntry,
@@ -64,8 +66,9 @@ from events_diary.investigation_window import (
 )
 from events_diary.ticket_scroll import TicketScrollState, analyze_ticket_scroll_sequence
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_investigation_candidates import _measure_timeline
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/stable_ticket_view_calibration"
 SOURCES = ("ticket_scroll", "combined_interaction", "investigation_switch",
            "investigation_started_active", "investigation_close_reopen")

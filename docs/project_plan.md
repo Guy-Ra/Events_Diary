@@ -511,7 +511,7 @@ Those consumer-level responsibilities remain for later phases.
 
 ### 2.5 Real-Video Validation & Closure - COMPLETE
 
-`scripts/validate_phase2.py` combines real-video regression with limited
+`scripts/validation/validate_phase2.py` combines real-video regression with limited
 cross-phenomenon checks using unchanged production APIs at source-frame density.
 
 - Pan: 124/124 valid map estimates; translation with scale approximately one.
@@ -536,7 +536,8 @@ provisional; these signals do not themselves decide Investigation Events.
 
 Phase 3 consumes this completed evidence layer through separate Investigation
 signals, candidates, temporal confirmation, and lifecycle construction. Phase 4
-consumes those outputs; Phase 5 is the next planned phase.
+consumes those outputs; the completed Phase 5 materializes and selects its evidence
+requests. Phase 6 is next and not started.
 
 ---
 
@@ -584,7 +585,7 @@ produces a diagnostic anomaly rather than a crash. Equal-time events preserve or
 
 ### 3.5 Real-Video Validation & Phase 3 Closure - COMPLETE
 
-The original closure covered three manual recordings; `scripts/validate_phase3.py`
+The original closure covered three manual recordings; `scripts/validation/validate_phase3.py`
 now also includes the combined interaction regression and writes a concise closure
 report and interval CSV. Opening
 and direct switch, startup-active footage, and close/no-ticket/reopen scenarios
@@ -631,7 +632,7 @@ Phase 4 builds evidence requests and annotations from these outputs.
 ## Status
 
 **Phase 4 - Investigation Extraction & Adaptive Sampling: COMPLETE.**
-Subphases 4.1-4.5 are complete. Next planned: Phase 5 (NOT STARTED).
+Subphases 4.1-4.5 are complete. Phase 5 now consumes these outputs; Phase 6 is next.
 
 ### 4.1 Investigation Window Extraction - COMPLETE
 
@@ -666,7 +667,7 @@ must be unambiguous and every span must have existing candidate coverage.
 
 ### 4.5 End-to-End Validation, Documentation & Closure - COMPLETE
 
-`scripts/validate_phase4.py` reuses production APIs and shared evaluation
+`scripts/validation/validate_phase4.py` reuses production APIs and shared evaluation
 preparation for seven lifecycle, scroll, pan, zoom, and combined recordings. It
 checks preserved boundaries, exact candidate mapping, anchors, sampling reasons,
 stable coverage/provenance, moving evidence, and Phase 3 regressions. Per-window
@@ -689,88 +690,78 @@ need further validation. LOW body change does not prove semantic completeness.
 Dense candidate volume may be high during prolonged activity.
 
 Phase 4 outputs windows, requested timestamps, stable views, and unified evidence
-candidates. Resolving requests to physical frames is separate downstream work.
-Final ranking/selection, OCR, semantic deduplication, and ticket-section extraction
-are not implemented. **Next: Phase 5 - Role-Based Frame & Ticket-Section Selection**,
-which remains NOT STARTED.
+candidates. Physical resolution and role-based reference selection are implemented
+separately in the completed Phase 5 without changing Phase 4 semantics. OCR,
+semantic deduplication and ticket-section extraction remain future work in Phase 6.
 
 ---
 
 # 9. Phase 5 — Role-Based Frame & Ticket-Section Selection
 
-Status: NEXT PLANNED; NOT STARTED.
+Status: COMPLETE.
 
-## Objective
+## Objective and delivered contract
 
-Select the best evidence for each downstream task.
+Turn Phase 4 EvidenceCandidates into a bounded set of explainable visual evidence
+references per real Investigation. Selection preserves stable-ticket coverage
+and ownership rather than interpreting ticket text or maximizing a quality score.
 
-## Planned roles
+### 5.1 Frame Materialization — COMPLETE
 
-```text
-ticket_header
-ticket_route_times
-ticket_aircraft_details
-ticket_flight_state
-ticket_data_source
-ticket_additional_section
-route
-aircraft_image
-context
-```
+Frame-resolution/quality calibration and production materialization are complete.
+Every candidate retains its requested timestamp and receives an explicit nearest
+constant-FPS physical-frame result, including adjusted video-end anchors and
+unresolved status when needed. Lightweight records hold scalar raw ticket-body
+quality diagnostics; separate bounded/shared frame access supplies images.
+There is no quality score or filtering at this layer.
 
-Roles may be refined after inspecting real videos.
+### 5.2 Ticket-View Similarity / Section Diversity — COMPLETE
 
-## Ticket selection
+Calibration and production measurements compare the ticket-scroll body using raw
+MAD/CPR and optional guarded vertical phase-correlation alignment with
+overlap-aware residuals. Rejection preserves raw measurements. These are pixel
+measurements, not duplicate/new-section/replacement decisions; similarity does
+not collapse stable views.
 
-Evaluate:
+### 5.3 Role-Based Representative Selection — COMPLETE
 
-```text
-sharpness
-stability
-readability
-loaded state
-section coverage
-```
+Calibration and the pure production selector are complete. Ownership precedes
+role coverage, stability and local quality. Exactly one reference represents
+each stable view, preferring the nearest eligible post-confirmation candidate.
+Post-scroll views are retained conservatively. Quality only breaks local temporal
+ties; no global ranking or fixed quota exists. Map/route context is bounded
+separately; scroll provenance and Investigation boundary context are optional.
+Reasons merge deterministically onto reference-only chronological results.
 
-N/A is valid loaded data.
+### 5.4 End-to-End Validation, Documentation & Closure — COMPLETE
 
-## Route selection
+The closure validator runs all current representative recordings through actual
+lifecycle, window, adaptive sampling, stable views, candidate composition,
+materialization and selection. Ticket-minimal, default and full-context
+configurations preserve primary coverage, confirmation preference and ownership.
+Endpoint resolution, bounded activity evidence, configuration monotonicity and
+small similarity controls pass, alongside the full test suite, Ruff, Phase 3/4
+regressions and required Phase 5 evaluators. Detailed measurements remain in local
+reports; this is representative/manual validation, not a labeled benchmark.
 
-Evaluate:
+## Limitations and next phase
 
-```text
-route visibility
-selected aircraft visibility
-map stability
-viewport coverage
-route clipping
-```
+Current validation mostly covers the known 1920x1080, 10 FPS FR24 layout. Physical
+resolution uses a constant-FPS contract; broader VFR/backend/layout validation is
+open. Stability does not establish loading completeness or semantic field
+coverage. Live values may change within a stable view; returns to earlier ticket
+positions are not semantically collapsed. Alignment may alias repetitive/large
+shifts. No OCR-based section semantics or map-image similarity exists, and an
+activity midpoint need not capture final/extreme map state.
 
-## Aircraft image selection
-
-Evaluate:
-
-```text
-image loaded
-sharpness
-crop completeness
-placeholder
-occlusion
-```
-
-## Deduplication
-
-Near-identical visual evidence can be removed.
-
-Different ticket scroll states must remain if they reveal new information.
-
-## Done when
-
-The selected evidence set is compact but covers all materially useful visible information.
+**Next: Phase 6 — OCR + Complete Ticket Extraction (NOT STARTED).**
+Phase 6 requires explicit review/approval of this closure.
 
 ---
 
 # 10. Phase 6 — OCR + Complete Ticket Extraction
+
+Status: NEXT PLANNED; NOT STARTED.
 
 ## Objective
 

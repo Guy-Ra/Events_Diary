@@ -23,13 +23,14 @@ records FAIL and stops further videos; no production result is silently repaired
 
 import csv
 import math
+import sys
 from collections import Counter
 from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
 
-from evaluate_adaptive_sampling_plan import _pair_reasons
-from evaluate_ticket_stable_views import _build_contexts
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.adaptive_sampling import (
     DENSE_REASON_ORDER,
@@ -44,8 +45,10 @@ from events_diary.evidence_candidate_timeline import (
 from events_diary.investigation_lifecycle import build_investigation_lifecycle
 from events_diary.investigation_signals import SignalStrength, is_investigation_present
 from events_diary.investigation_temporal import bridge_transient_absence
+from scripts.evaluation.evaluate_adaptive_sampling_plan import _pair_reasons
+from scripts.evaluation.evaluate_ticket_stable_views import _build_contexts
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/phase4_closure"
 SOURCES = ("investigation_switch", "investigation_started_active", "investigation_close_reopen",
            "ticket_scroll", "map_pan", "map_zoom", "combined_interaction")

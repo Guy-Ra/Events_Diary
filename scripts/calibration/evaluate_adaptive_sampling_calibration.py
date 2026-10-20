@@ -35,11 +35,14 @@ it verifies source count/index/FPS coverage but does not prove pixel-level fresh
 import argparse
 import csv
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import numpy as np
-from validate_phase2 import _sequential_frames
 
 from events_diary.config import UIConfig
 from events_diary.investigation_signals import (
@@ -47,8 +50,9 @@ from events_diary.investigation_signals import (
     analyze_investigation_pair,
 )
 from events_diary.video import read_video_metadata
+from scripts.validation.validate_phase2 import _sequential_frames
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion/adaptive_sampling_calibration"
 VIDEO_STEMS = ("investigation_switch", "investigation_started_active", "investigation_close_reopen",
                "ticket_scroll", "map_pan", "map_zoom")

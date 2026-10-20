@@ -23,12 +23,13 @@ No Phase 4 sampling/content extraction, identity, OCR, or Jira writes occur here
 
 import csv
 import math
+import sys
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 
-from evaluate_investigation_candidates import _evaluate
-from evaluate_investigation_temporal import _entries
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from events_diary.config import UIConfig
 from events_diary.investigation_detection import InvestigationCandidateKind
@@ -43,8 +44,10 @@ from events_diary.investigation_temporal import (
     confirm_investigation_candidates,
 )
 from events_diary.video import read_video_metadata
+from scripts.evaluation.evaluate_investigation_candidates import _evaluate
+from scripts.evaluation.evaluate_investigation_temporal import _entries
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data/debug/map_motion"
 EXPECTED = {
     "combined_interaction": {

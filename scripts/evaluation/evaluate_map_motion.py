@@ -7,12 +7,16 @@ Canonical UI exclusions affect SIFT detection only; all metric pixels remain.
 """
 
 import sys
+from pathlib import Path
+
+# Allow direct execution and explicit imports across script directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import cv2
-from evaluate_change_metrics import DATA_DIR, load_image_pair
 
 from events_diary.config import UIConfig
 from events_diary.map_motion import estimate_map_motion
+from scripts.calibration.evaluate_change_metrics import DATA_DIR, load_image_pair
 
 
 def main() -> int:
