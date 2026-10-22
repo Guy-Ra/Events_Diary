@@ -1,7 +1,7 @@
 # Events Diary
 
-Local project building toward structured aircraft event logs from Flightradar24
-screen recordings, using computer vision and planned OCR/VLM assistance.
+Local project building structured aircraft event logs from Flightradar24 screen
+recordings using deterministic computer vision, OCR and Gemini VLM observations.
 
 ## Project Status
 
@@ -22,11 +22,11 @@ provenance/boundary context. Evidence volume follows role coverage rather than a
 global frame quota.
 
 Validation is representative/manual, not a labeled benchmark. Thresholds remain
-provisional; stable views do not prove loading completeness. OCR, structured
-ticket extraction, semantic section classification, and VLM logic are not
-implemented.
+provisional; stable views do not prove loading completeness. The complete-video
+Gemini VLM path is integrated; OCR/VLM fusion remains Phase 6.5 work.
 
-**Next planned: Phase 6 - OCR + Complete Ticket Extraction (NOT STARTED).**
+**Current: Phase 6 - OCR + Complete Ticket Extraction (IN PROGRESS). Phase 6.4b
+Gemini integration is complete; Phase 6.5 fusion is next and not started.**
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,

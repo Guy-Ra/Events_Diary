@@ -96,8 +96,9 @@ Unknown values are valid outputs.
 
 Computer vision, OCR, geometry, temporal reasoning, and explicit system rules should handle tasks that can be solved reliably without a VLM.
 
-The future VLM branch independently analyzes the full Investigation core clip.
-It complements deterministic/OCR evidence without changing their responsibilities.
+The Gemini VLM branch independently analyzes the complete continuous Investigation
+video. It complements deterministic/OCR evidence without changing their
+responsibilities.
 
 ### 4.3 VLM as assistant, not authority
 
@@ -184,8 +185,8 @@ Possible evidence/source classes include:
 
 ```text
 OCR
-GEMMA_VISUAL
-GEMMA_SEMANTIC
+VLM_OBSERVATION
+VLM_INTERPRETATION
 CV_GEOMETRY
 ROUTE_INFERENCE
 AIRCRAFT_IMAGE
@@ -193,7 +194,7 @@ SYSTEM_RULE
 ```
 
 OCR and VLM observations remain separate until fusion. VLM provenance records the
-actual model/source identity; the example GEMMA labels above do not select a model.
+actual configured Gemini model and source identity.
 Supplied deterministic guidance is not independently VLM-observed evidence.
 Clip-level evidence may have only a time range; never invent frame precision.
 Observed information remains distinct from unsupported inference or enrichment.
@@ -272,7 +273,7 @@ Responsibilities:
 - Ruff;
 - configuration foundation;
 - logging foundation;
-- runtime/hardware/model profile skeleton;
+- central API-based VLM configuration;
 - first application entry point.
 
 No Flightradar24 visual logic should be implemented here.
@@ -895,15 +896,15 @@ states, and similarity can alias on large/repetitive shifts.
 Phase 5 hands downstream consumers reference-only selections with original
 candidate, stable-view and materialization provenance available externally.
 Coverage describes visual evidence roles, not extracted fields or proven semantic
-completeness. **Next: Phase 6 — OCR + Complete Ticket Extraction**, not started.
+completeness. **Phase 6 is in progress; Phase 6.5 OCR/VLM fusion is next and not started.**
 
 ---
 
 ## Phase 6 — OCR + Complete Ticket Extraction
 
-Status: NEXT / NOT STARTED. The following describes approved future architecture,
-not implemented OCR or VLM components. Phase 6 initially establishes the OCR
-branch while retaining the independent VLM branch and later fusion boundary.
+Status: IN PROGRESS. The following describes the OCR/VLM branch architecture.
+Phase 6.4b Gemini API integration is complete; OCR/VLM fusion is Phase 6.5 and
+has not started.
 
 ### Approved parallel analysis boundary
 
@@ -953,17 +954,17 @@ not an automatically authoritative final ticket record.
 
 ### VLM input, guidance and observations
 
-The VLM branch consumes the full short Investigation core clip, including temporal
-content between selected frames. There is currently one full-Investigation VLM
-mode. It is an independent consumer, not an OCR fallback or a selected-frame-only
-reader. Hardware/runtime feasibility will be calibrated later.
+The MVP VLM branch sends the complete continuous Investigation MP4 directly to
+the configured Google Gemini API with the production `fr24_vlm_v1` prompt. The
+application does not sample frames for VLM inference. Gemini is an independent
+consumer, not an OCR fallback, and receives no OCR values. Its structured JSON is
+parsed source-faithfully into VLM observations. This is the sole MVP VLM path;
+model, prompt and runtime optimization is deferred to post-MVP Stage 11.
 
-Deterministic guidance may include Investigation index and boundaries,
-representative timestamps, stable/post-scroll views, scroll timing and map
-translation, scale or route-visual-change activity. Label guidance as supplied
-deterministic evidence, separately from the VLM's own observations. Padded/merged
-activity labels are context; exact motion timing must retain its underlying
-pair-level provenance when available.
+Future deterministic analysis context may package Investigation boundaries,
+representative timestamps, stable/post-scroll views, scroll timing and map/route
+activity. Keep any such guidance distinguishable from Gemini-observed evidence;
+it does not change upstream deterministic results.
 
 VLM observations retain observed/interpreted values, available model confidence,
 model/source identity, Investigation identity, clip bounds and contextual support.
@@ -973,12 +974,10 @@ inference and enrichment remain distinguishable from direct observation.
 
 ### Future clip extraction and analysis context
 
-Clip extraction defaults to Investigation core boundaries, rather than the
-padded processing window. Any added pre/post context must be explicit. Preserve
-the mapping from clip-relative timestamps/frame positions back to original-video
-time, including actual extracted bounds and any encoding/time-base adjustment.
-Do not reconstruct the VLM clip from sparse representatives or silently trim
-content to accommodate runtime constraints.
+The MVP sends the continuous Investigation MP4 and retains its original-video
+time bounds. Any future clip extraction must make added context explicit and
+preserve mapping from clip-relative times back to the original video. Do not
+reconstruct the VLM clip from sparse representatives.
 
 A future analysis context may package video/Investigation identity, core bounds,
 representative candidate indexes, stable views and scroll/map/route metadata.
@@ -1319,23 +1318,11 @@ They do not:
 
 # 8. Hardware and Model Adaptation
 
-Hardware/runtime feasibility will be calibrated later using representative full
-Investigation clips. Existing runtime inspection does not prescribe a backend,
-GPU requirement or semantic execution policy.
-
-There is currently one full-Investigation VLM mode. No light/medium/full tiers,
-hardware-based task selection or hardware-driven semantic degradation are
-approved. A GPU is not assumed mandatory. Future measurements should establish
-model/backend compatibility, fidelity, memory, latency and supported clip lengths
-before any runtime requirements are set.
-
-Do not infer capability from model name or parameter count alone; evaluate the
-actual model/backend against the approved full-clip contract.
-
-If a branch cannot execute, report its failure/unavailability explicitly and
-preserve the other branch's evidence. Do not silently substitute selected images,
-remove clip content or lower semantic scope. Any future change to the approved
-single-mode architecture requires empirical justification and explicit review.
+Google Gemini API is the sole VLM runtime for the MVP and receives the complete
+Investigation video. The request does not use local-model hardware profiles or
+application-side frame sampling. Report branch failure explicitly and preserve
+other evidence. Model, prompt and runtime options belong to post-MVP Stage 11;
+they must not silently change the MVP input scope or semantic task.
 
 ---
 

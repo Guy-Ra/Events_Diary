@@ -108,6 +108,14 @@ Outcome:
 
 Repeated aircraft investigations are linked when appropriate, and the full canonical JSON + operational log + detailed report are generated.
 
+### Roadmap boundary
+
+Stages 0–10 build and close the MVP. Stage 11 begins only after end-to-end MVP
+completion and validation. The priority is to build the complete working system
+before optimizing, refactoring, strengthening or generalizing it. Non-blocking
+optimization ideas found during Stages 0–10 belong in the Stage 11 backlog; do
+not begin that work during MVP phases unless a blocker prevents MVP completion.
+
 ---
 
 # 4. Phase 0 — Project Foundation
@@ -214,21 +222,11 @@ Requirements:
 - useful warnings/errors;
 - no excessive debug noise by default.
 
-### 0.8 Runtime profile foundation
+### 0.8 Runtime configuration foundation
 
-Define a minimal way to inspect the execution environment.
-
-Future concepts:
-
-```text
-HardwareProfile
-ModelProfile
-ExecutionProfile
-```
-
-Do not fully model all future VLM capabilities during Phase 0.
-
-Only create what is needed to expose runtime information cleanly.
+Keep runtime configuration centralized and limited to settings used by the
+current application path. The Gemini VLM API configuration is loaded from `.env`;
+hardware/model execution profiles are not part of the MVP VLM architecture.
 
 ### 0.9 Application entry point
 
@@ -537,7 +535,8 @@ provisional; these signals do not themselves decide Investigation Events.
 Phase 3 consumes this completed evidence layer through separate Investigation
 signals, candidates, temporal confirmation, and lifecycle construction. Phase 4
 consumes those outputs; the completed Phase 5 materializes and selects its evidence
-requests. Phase 6 is next and not started.
+requests. Phase 6 is in progress: Phase 6.4b Gemini VLM integration is complete;
+Phase 6.5 OCR/VLM fusion is next and not started.
 
 ---
 
@@ -754,35 +753,39 @@ positions are not semantically collapsed. Alignment may alias repetitive/large
 shifts. No OCR-based section semantics or map-image similarity exists, and an
 activity midpoint need not capture final/extreme map state.
 
-**Next: Phase 6 — OCR + Complete Ticket Extraction (NOT STARTED).**
-Phase 6 requires explicit review/approval of this closure.
+**Phase 6 — OCR + Complete Ticket Extraction: IN PROGRESS.** Phase 6.4b
+Production Gemini VLM Integration is COMPLETE; Phase 6.5 OCR/VLM fusion is NEXT
+and NOT STARTED.
 
 ---
 
 # 10. Phase 6 — OCR + Complete Ticket Extraction
 
-Status: NEXT / NOT STARTED. Phase 6.1a implementation has not begun.
+Status: IN PROGRESS. Phase 6.4b Production Gemini VLM Integration is COMPLETE;
+Phase 6.5 OCR/VLM fusion is NEXT / NOT STARTED.
 
 ## Objective
 
-Establish the OCR branch as source-specific evidence extraction, preserving the
-approved independent full-Investigation VLM branch and later fusion boundary.
+Establish source-specific OCR observations alongside the independent Gemini VLM
+branch. Keep fusion as the later Phase 6.5 boundary.
 
 ## Approved parallel architecture
 
 ```text
 Investigation / Phase 5 selection
   +-> selected physical frames / precise ticket ROIs -> OCR observations
-  +-> full Investigation core clip + labeled guidance -> VLM observations
+  +-> complete continuous Investigation MP4 + fr24_vlm_v1 -> Gemini API -> VLM observations
 OCR observations + VLM observations
   -> Evidence Fusion -> cross-check / conflict handling -> structured output
 ```
 
 The branches can run in parallel and neither consumes the other's output as an
 execution prerequisite. Each branch can fail or be unavailable without discarding
-the other's evidence. VLM is not an OCR fallback; there is currently one
-full-Investigation VLM mode. Hardware/runtime feasibility will be calibrated later,
-without assumed GPU requirements, execution tiers or semantic degradation.
+the other's evidence. The MVP VLM path sends the complete continuous Investigation
+video directly to the configured Google Gemini API with `fr24_vlm_v1`; the VLM is
+not an OCR fallback and receives no OCR values. The application does not sample
+video frames for VLM inference. Model, prompt and runtime optimization is deferred
+to post-MVP Stage 11.
 
 ## Planned OCR work
 
@@ -801,11 +804,10 @@ Phases 1–5 require no redesign and remain authoritative for boundaries, stable
 views, selection and visual timing. Future analysis context may package existing
 deterministic guidance without modifying upstream models.
 
-Future clip extraction uses the complete core by default and preserves
-clip-relative to original-video time mapping, actual extracted bounds and any
-time-base adjustment. Pre/post context must be explicit. VLM input includes
-temporal content between representatives, not a clip reconstructed from selections.
-Guidance remains distinct from what the VLM independently observed.
+The MVP passes the continuous Investigation MP4 and retains its original-video
+time bounds. It is not reconstructed from selected frames. Any future clip
+extraction must preserve mapping to original-video time and actual bounds. Future
+deterministic analysis context must remain separate from VLM observations.
 
 Separate future OCR/VLM observations preserve provenance and confidence meaning.
 UNREADABLE, NOT_PRESENT, OBSERVED, EXPLICIT_NA, AMBIGUOUS, CONFLICT, INFERRED and
@@ -819,7 +821,8 @@ Readable ticket sections across selected views can be combined into traceable
 Investigation-level OCR observations, preserving uncertainty and provenance for
 later fusion. Fusion and
 cross-checking retain disagreements rather than silently overwriting either
-source. This documentation does not implement OCR, VLM or their future models.
+source. The production Gemini VLM branch is implemented; fusion remains a later
+Phase 6.5 task.
 
 ---
 
@@ -886,9 +889,9 @@ Preserve model/source identity, clip bounds, observed/interpreted values and
 available confidence; supporting times/ranges are recorded only when reliable.
 
 OCR and VLM can run concurrently. Neither requires the other's output, and
-failure/unavailability in one branch preserves evidence from the other. There is
-one full-Investigation VLM mode; runtime feasibility is a later calibration task,
-not a reason to introduce GPU assumptions, tiers or semantic degradation.
+failure/unavailability in one branch preserves evidence from the other. The MVP
+uses one full-Investigation Gemini API mode. Model and runtime optimization is
+deferred to Stage 11; it does not introduce hardware-based semantic tiers.
 
 ## Fusion and cross-check
 
@@ -907,9 +910,9 @@ boundaries, stable views, representative selection or visual timing.
 
 ## Runtime feasibility and completion
 
-Calibrate model/backend support, fidelity, memory and latency on representative
-full clips before choosing runtime requirements. Preserve explicit branch
-availability rather than silently changing input scope or semantic tasks.
+The production MVP path is the configured Gemini API receiving the complete
+Investigation clip. Later Stage 11 work may measure fidelity, latency and runtime
+options, while preserving explicit branch availability and the full-clip contract.
 This phase is complete only when observations can be fused and cross-checked
 with agreement, conflicts, uncertainty and provenance preserved.
 
@@ -1035,7 +1038,55 @@ A human reviewer can compare the generated outputs against the video and confirm
 
 ---
 
-# 15. Planned Test Organization
+# 15. Stage 11 — System Optimization & Improvement
+
+Stage 11 is a dedicated post-MVP phase for improving the complete system using
+empirical evidence from end-to-end operation. It starts only after Stages 0–10
+are complete and the MVP has been validated. It is not a prerequisite for MVP
+completion, and it does not authorize premature optimization or generalization
+during MVP implementation.
+
+The backlog is intentionally open and may expand as full-pipeline use reveals
+new bottlenecks or opportunities. Candidate work includes:
+
+1. **VLM optimization:** extraction accuracy, prompt and interface design,
+   section/group-based extraction, field association, small-text reading,
+   time and technical-field accuracy, visual-token budgets, temporal guidance,
+   structured output, Gemini model/API behavior and latency.
+2. **OCR improvements:** accuracy, preprocessing, difficult fields, spatial
+   association, cross-view extraction, and text normalization where evidence
+   justifies it.
+3. **OCR–VLM fusion:** agreement and conflict handling, provenance and
+   confidence use, source weighting, ambiguity handling, and cross-check quality.
+4. **Sampling and temporal pipeline:** Investigation clip handling, adaptive
+   sampling, stable-view logic, temporal guidance, representative selection,
+   and reduction of unnecessary computation.
+5. **Runtime and performance:** CPU/GPU execution, latency, memory, batching,
+   parallelism, quantization, model/runtime choices, and appropriate caching.
+6. **Accuracy and robustness:** field-level evaluation, difficult edge cases,
+   Investigation switches, scrolling, missing or unreadable fields,
+   contamination prevention, and failure recovery.
+7. **Architecture cleanup and refactoring:** MVP-specific compromises,
+   simplification, module boundaries, configuration cleanup, and removal of
+   temporary calibration/debug code where appropriate.
+8. **Generalization beyond the current FR24 MVP:** localization or system
+   profiles and additional layouts/systems only when empirical evidence warrants
+   them; avoid premature abstraction.
+9. **Output and product improvements:** canonical output quality, report
+   rendering, evidence presentation, operator usability, and other useful
+   outputs.
+10. **New capabilities:** features discovered during MVP validation and justified
+    by real end-to-end usage.
+
+#### VLM optimization backlog
+
+The MVP VLM baseline is one complete continuous Investigation MP4 sent directly
+to the configured Google Gemini API with `fr24_vlm_v1`, followed by strict JSON
+parsing into source-specific observations. It is independent from OCR and receives
+no OCR values. Phase 6.4b integration is complete; OCR/VLM fusion begins in Phase
+6.5. Stage 11 may evaluate extraction quality, prompt/API behavior and latency.
+
+## 16. Planned Test Organization
 
 The repository may evolve toward:
 
@@ -1054,7 +1105,7 @@ Mocks belong under tests, including any mock VLM implementation.
 
 ---
 
-# 16. Current Repository Foundation
+# 17. Current Repository Foundation
 
 Current intended structure:
 

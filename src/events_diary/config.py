@@ -5,9 +5,13 @@ Configuration values are kept separate from runtime behavior so that
 settings can be managed centrally and extended as the project grows.
 """
 
-from dataclasses import dataclass
+import math
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
+from dotenv import load_dotenv
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,66 @@ class AppConfig:
     """
 
     log_level: str = "INFO"
+
+
+@dataclass(frozen=True)
+class VLMAPISettings:
+    """Immutable provider/model settings; the API key is hidden from repr output."""
+
+    provider: str
+    api_key: str = field(repr=False)
+    base_url: str
+    api_version: str
+    model_name: str
+    request_timeout_s: float
+
+    @property
+    def endpoint_url(self) -> str:
+        """Build the Gemini GenerateContent endpoint from configured components."""
+        return f"{self.base_url.rstrip('/')}/{self.api_version.strip('/')}/models/{self.model_name}:generateContent"
+
+    @property
+    def api_key_configured(self) -> bool:
+        """Report whether credentials are present without exposing their value."""
+        return bool(self.api_key.strip())
+
+
+def load_vlm_api_settings(*, env_file: Path | None = None, override: bool = False) -> VLMAPISettings:
+    """Load VLM settings once at the project configuration boundary.
+
+    Existing process environment variables retain precedence by default. Passing
+    an explicit dotenv path is useful for isolated tests and project tooling.
+    """
+    dotenv_path = env_file or Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(dotenv_path=dotenv_path, override=override)
+
+    def get(name: str, default: str) -> str:
+        """Read one already-loaded setting, using its safe project default."""
+        return os.environ.get(name, default)
+
+    def number(name: str, default: str, kind):
+        """Parse a numeric setting and raise a non-sensitive configuration error."""
+        try:
+            value = kind(get(name, default))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{name} must be a valid {kind.__name__}.") from error
+        return value
+
+    settings = VLMAPISettings(
+        provider=get("EVENTS_DIARY_VLM_PROVIDER", "gemini").strip().lower(),
+        api_key=get("EVENTS_DIARY_VLM_API_KEY", ""),
+        base_url=get("EVENTS_DIARY_VLM_API_BASE_URL", "https://generativelanguage.googleapis.com").strip(),
+        api_version=get("EVENTS_DIARY_VLM_API_VERSION", "v1beta").strip(),
+        model_name=get("EVENTS_DIARY_VLM_MODEL", "gemini-flash-latest").strip(),
+        request_timeout_s=number("EVENTS_DIARY_VLM_REQUEST_TIMEOUT_S", "180", float),
+    )
+    if settings.provider != "gemini":
+        raise ValueError("Only the 'gemini' VLM provider is currently supported.")
+    if not settings.base_url or not settings.api_version or not settings.model_name:
+        raise ValueError("VLM API base URL, API version, and model name must be nonempty.")
+    if not math.isfinite(settings.request_timeout_s) or settings.request_timeout_s <= 0:
+        raise ValueError("EVENTS_DIARY_VLM_REQUEST_TIMEOUT_S must be positive.")
+    return settings
 
 
 @dataclass(frozen=True)
