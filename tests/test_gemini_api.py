@@ -157,6 +157,37 @@ def test_provider_error_does_not_leak_credential(tmp_path, monkeypatch):
     assert SECRET not in repr(result)
 
 
+def test_http_error_preserves_sanitized_provider_details(tmp_path, monkeypatch):
+    """Retain useful HTTP error fields while redacting keys and payload-like data."""
+    clip = tmp_path / "investigation.mp4"
+    clip.write_bytes(b"video")
+    provider_body = {
+        "error": {
+            "code": 400,
+            "status": "INVALID_ARGUMENT",
+            "message": f"Invalid request for {SECRET}",
+            "details": [{"reason": "BAD_SCHEMA", "data": "A" * 600}],
+        }
+    }
+
+    def fail_http(*_, **__):
+        raise HTTPError(
+            "https://invalid", 400, "bad request", {},
+            io.BytesIO(json.dumps(provider_body).encode()),
+        )
+
+    monkeypatch.setattr(gemini_api, "urlopen", fail_http)
+    result = GeminiAPIRuntime(make_settings()).run_with_diagnostics(make_request(clip))
+
+    sanitized = json.loads(result.diagnostics.provider_response_json)
+    assert result.raw_result.execution_status == "runtime_error"
+    assert sanitized["error"]["code"] == 400
+    assert sanitized["error"]["status"] == "INVALID_ARGUMENT"
+    assert SECRET not in result.diagnostics.provider_response_json
+    assert "[REDACTED]" in result.diagnostics.provider_response_json
+    assert "A" * 600 not in result.diagnostics.provider_response_json
+
+
 def test_oversized_video_fails_before_http_request(tmp_path, monkeypatch):
     """Reject inline payloads beyond Gemini's supported size before transport."""
     clip = tmp_path / "oversized.mp4"

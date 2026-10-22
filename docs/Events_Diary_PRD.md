@@ -165,7 +165,8 @@ Operational Log  Detailed Report
 The MVP has one VLM mode: send the complete continuous Investigation MP4 directly
 to Gemini, request structured JSON, and parse the result without semantic repair.
 There is no application-side VLM frame sampling. OCR and VLM remain independent
-branches; fusion begins in Phase 6.5. The VLM is evidence, not unrestricted authority.
+branches; Phase 6.5 implements their fusion and cross-check. The VLM is evidence,
+not unrestricted authority.
 
 ## 10. Runtime and Hardware Adaptation
 
@@ -255,5 +256,9 @@ of the entire system; see `docs/project_plan.md` for its detailed, open backlog.
 ## Appendix A. Current Project Status
 
 Phases 0–5 are complete. Phase 6 is in progress: Phase 6.4b Gemini API integration
-is complete, and Phase 6.5 OCR/VLM fusion is next and not started. The MVP VLM
-path sends a complete continuous Investigation video directly to Gemini.
+and Phase 6.5 OCR/VLM fusion/cross-check are complete following real-video
+end-to-end validation. The MVP VLM path sends a complete continuous Investigation
+video directly to Gemini. Pass 1 uses JSON mode with its response schema; Pass 2
+uses JSON mode without `responseSchema`, and its production parser validates the
+full review contract. This choice follows validation where the full Pass 2 schema
+was rejected but schema-free JSON mode succeeded.

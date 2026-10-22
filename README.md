@@ -23,10 +23,11 @@ global frame quota.
 
 Validation is representative/manual, not a labeled benchmark. Thresholds remain
 provisional; stable views do not prove loading completeness. The complete-video
-Gemini VLM path is integrated; OCR/VLM fusion remains Phase 6.5 work.
+Gemini VLM path and Phase 6.5 OCR/VLM fusion/cross-check are implemented and
+validated on real video.
 
 **Current: Phase 6 - OCR + Complete Ticket Extraction (IN PROGRESS). Phase 6.4b
-Gemini integration is complete; Phase 6.5 fusion is next and not started.**
+Gemini integration and Phase 6.5 fusion/cross-check are complete.**
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,

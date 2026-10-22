@@ -8,6 +8,7 @@ and provider diagnostics; semantic interpretation remains in ``vlm_parsing``.
 
 import base64
 import json
+import re
 import time
 from dataclasses import dataclass
 from http.client import HTTPException
@@ -18,6 +19,7 @@ from urllib.request import Request, urlopen
 from events_diary.config import VLMAPISettings
 from events_diary.vlm import ExecutionStatus, RawVLMResult, VLMRequest, VLMRuntime
 from events_diary.vlm_prompts import VLM_BOOLEAN_FIELDS, VLM_TEXT_FIELDS
+from events_diary.vlm_review import VLMReviewRequest
 
 GEMINI_API_KEY_ENV = "EVENTS_DIARY_VLM_API_KEY"
 MAX_INLINE_VIDEO_BYTES = 20 * 1024 * 1024
@@ -80,14 +82,16 @@ class GeminiAPIRuntime(VLMRuntime):
         """Request JSON output without imposing sampling or token-budget options."""
         return {"responseMimeType": "application/json"}
 
-    def run(self, request: VLMRequest) -> RawVLMResult:
+    def run(self, request: VLMRequest | VLMReviewRequest) -> RawVLMResult:
         """Execute a continuous-video request through Gemini and return raw text."""
         return self.run_with_diagnostics(request).raw_result
 
-    def run_with_diagnostics(self, request: VLMRequest) -> GeminiRunResult:
+    def run_with_diagnostics(
+        self, request: VLMRequest | VLMReviewRequest
+    ) -> GeminiRunResult:
         """Run a video request and retain sanitized response metadata for validation."""
-        if not isinstance(request, VLMRequest):
-            raise TypeError("request must be VLMRequest.")
+        if not isinstance(request, (VLMRequest, VLMReviewRequest)):
+            raise TypeError("request must be VLMRequest or VLMReviewRequest.")
         started = time.perf_counter()
         path = request.video_clip_path
         try:
@@ -109,11 +113,13 @@ class GeminiAPIRuntime(VLMRuntime):
                 f"{GEMINI_API_KEY_ENV} is unset.")
 
         generation_config = self._generation_config()
-        payload = self._video_payload(request, video_bytes, generation_config, include_schema=True)
+        schema_used = not isinstance(request, VLMReviewRequest)
+        payload = self._video_payload(
+            request, video_bytes, generation_config, include_schema=schema_used,
+        )
         status_code, response_bytes, transport_error = self._post(payload, key)
-        schema_used = True
         schema_rejected = False
-        if status_code == 400 and self._is_schema_rejection(response_bytes):
+        if schema_used and status_code == 400 and self._is_schema_rejection(response_bytes):
             schema_rejected = True
             schema_used = False
             payload = self._video_payload(request, video_bytes, generation_config, include_schema=False)
@@ -125,17 +131,19 @@ class GeminiAPIRuntime(VLMRuntime):
                 response_schema_used=schema_used, response_schema_rejected=schema_rejected,
                 generation_config=generation_config)
         if status_code != 200:
+            safe_response = self._sanitize_provider_error(response_bytes, key)
             return self._failed(request, "runtime_error", started, f"Gemini API returned HTTP {status_code}.",
                 elapsed=elapsed, response_schema_used=schema_used,
                 response_schema_rejected=schema_rejected, generation_config=generation_config,
-                provider_response_json=response_bytes.decode("utf-8", errors="replace"))
+                provider_response_json=safe_response)
         return self._result_from_response(
             request, response_bytes, elapsed, generation_config,
             schema_used=schema_used, schema_rejected=schema_rejected,
         )
 
     def _video_payload(
-        self, request: VLMRequest, video_bytes: bytes, generation_config: dict[str, Any], *, include_schema: bool,
+        self, request: VLMRequest | VLMReviewRequest, video_bytes: bytes,
+        generation_config: dict[str, Any], *, include_schema: bool,
     ) -> dict[str, Any]:
         """Build Gemini JSON with the entire video bytes and current production prompt."""
         config = dict(generation_config)
@@ -172,7 +180,8 @@ class GeminiAPIRuntime(VLMRuntime):
             return None, b"", ("runtime_error", "Gemini API request failed due to an I/O or HTTP error.")
 
     def _result_from_response(
-        self, request: VLMRequest, response_bytes: bytes, elapsed: float, generation_config: dict[str, Any],
+        self, request: VLMRequest | VLMReviewRequest, response_bytes: bytes,
+        elapsed: float, generation_config: dict[str, Any],
         *, schema_used: bool, schema_rejected: bool,
     ) -> GeminiRunResult:
         """Extract candidate text and provider telemetry without semantic parsing."""
@@ -253,6 +262,39 @@ class GeminiAPIRuntime(VLMRuntime):
         return isinstance(message, str) and "schema" in message.lower()
 
     @staticmethod
+    def _sanitize_provider_error(response_bytes: bytes, api_key: str) -> str:
+        """Preserve provider diagnostics while removing credentials and media payloads."""
+        raw = response_bytes.decode("utf-8", errors="replace")
+        try:
+            body: object = json.loads(raw)
+        except json.JSONDecodeError:
+            body = raw
+
+        def sanitize(value: object) -> object:
+            if isinstance(value, dict):
+                cleaned = {}
+                for key, item in value.items():
+                    normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                    if normalized_key in {
+                        "data", "apikey", "authorization", "access_token", "refreshtoken",
+                    }:
+                        cleaned[str(key)] = "[REDACTED]"
+                    else:
+                        cleaned[str(key)] = sanitize(item)
+                return cleaned
+            if isinstance(value, list):
+                return [sanitize(item) for item in value]
+            if isinstance(value, str):
+                cleaned = value.replace(api_key, "[REDACTED]") if api_key else value
+                return re.sub(r"[A-Za-z0-9+/]{512,}={0,2}", "[REDACTED_BASE64]", cleaned)
+            return value
+
+        cleaned_body = sanitize(body)
+        if isinstance(cleaned_body, str):
+            return cleaned_body
+        return json.dumps(cleaned_body, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
     def _safe_response_error(body: object, error: Exception) -> str:
         """Return a sanitized fixed-shape error without echoing model/provider text."""
         if isinstance(error, ValueError) and isinstance(body, dict):
@@ -263,7 +305,8 @@ class GeminiAPIRuntime(VLMRuntime):
         return "Gemini API response did not match the expected GenerateContent shape."
 
     def _make_raw(
-        self, request: VLMRequest, status: ExecutionStatus, elapsed: float, *, raw_text: str | None = None,
+        self, request: VLMRequest | VLMReviewRequest, status: ExecutionStatus,
+        elapsed: float, *, raw_text: str | None = None,
         generated_tokens: int | None = None, model_version: str | None = None, error: str | None = None,
     ) -> RawVLMResult:
         """Build the existing raw VLM contract without storing provider secrets."""
@@ -277,7 +320,8 @@ class GeminiAPIRuntime(VLMRuntime):
         )
 
     def _failed(
-        self, request: VLMRequest, status: ExecutionStatus, started: float, error: str, *,
+        self, request: VLMRequest | VLMReviewRequest, status: ExecutionStatus,
+        started: float, error: str, *,
         elapsed: float | None = None, provider_response_json: str | None = None,
         generation_config: dict[str, Any] | None = None, response_schema_used: bool = False,
         response_schema_rejected: bool = False,

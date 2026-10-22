@@ -535,8 +535,8 @@ provisional; these signals do not themselves decide Investigation Events.
 Phase 3 consumes this completed evidence layer through separate Investigation
 signals, candidates, temporal confirmation, and lifecycle construction. Phase 4
 consumes those outputs; the completed Phase 5 materializes and selects its evidence
-requests. Phase 6 is in progress: Phase 6.4b Gemini VLM integration is complete;
-Phase 6.5 OCR/VLM fusion is next and not started.
+requests. Phase 6 is in progress: Phase 6.4b Gemini VLM integration and Phase 6.5
+OCR/VLM fusion/cross-check are complete following real-video validation.
 
 ---
 
@@ -754,15 +754,15 @@ shifts. No OCR-based section semantics or map-image similarity exists, and an
 activity midpoint need not capture final/extreme map state.
 
 **Phase 6 — OCR + Complete Ticket Extraction: IN PROGRESS.** Phase 6.4b
-Production Gemini VLM Integration is COMPLETE; Phase 6.5 OCR/VLM fusion is NEXT
-and NOT STARTED.
+Production Gemini VLM Integration and Phase 6.5 OCR/VLM fusion/cross-check are
+COMPLETE following real-video validation.
 
 ---
 
 # 10. Phase 6 — OCR + Complete Ticket Extraction
 
-Status: IN PROGRESS. Phase 6.4b Production Gemini VLM Integration is COMPLETE;
-Phase 6.5 OCR/VLM fusion is NEXT / NOT STARTED.
+Status: IN PROGRESS. Phase 6.4b Production Gemini VLM Integration and Phase 6.5
+OCR/VLM fusion/cross-check are COMPLETE.
 
 ## Objective
 
@@ -785,7 +785,10 @@ the other's evidence. The MVP VLM path sends the complete continuous Investigati
 video directly to the configured Google Gemini API with `fr24_vlm_v1`; the VLM is
 not an OCR fallback and receives no OCR values. The application does not sample
 video frames for VLM inference. Model, prompt and runtime optimization is deferred
-to post-MVP Stage 11.
+to post-MVP Stage 11. Pass 1 uses JSON mode with its existing `responseSchema`;
+Pass 2 uses JSON mode without `responseSchema`, and its production parser
+validates the complete review contract. Real-video validation showed that the
+full Pass 2 schema was rejected while schema-free JSON mode succeeded.
 
 ## Planned OCR work
 
@@ -821,8 +824,8 @@ Readable ticket sections across selected views can be combined into traceable
 Investigation-level OCR observations, preserving uncertainty and provenance for
 later fusion. Fusion and
 cross-checking retain disagreements rather than silently overwriting either
-source. The production Gemini VLM branch is implemented; fusion remains a later
-Phase 6.5 task.
+source. Phase 6.5 OCR/VLM fusion and cross-check are complete; subsequent Phase 6
+work remains in progress.
 
 ---
 
@@ -1083,8 +1086,8 @@ new bottlenecks or opportunities. Candidate work includes:
 The MVP VLM baseline is one complete continuous Investigation MP4 sent directly
 to the configured Google Gemini API with `fr24_vlm_v1`, followed by strict JSON
 parsing into source-specific observations. It is independent from OCR and receives
-no OCR values. Phase 6.4b integration is complete; OCR/VLM fusion begins in Phase
-6.5. Stage 11 may evaluate extraction quality, prompt/API behavior and latency.
+no OCR values. Phase 6.4b integration and Phase 6.5 OCR/VLM fusion/cross-check are
+complete. Stage 11 may evaluate extraction quality, prompt/API behavior and latency.
 
 ## 16. Planned Test Organization
 

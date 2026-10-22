@@ -896,15 +896,14 @@ states, and similarity can alias on large/repetitive shifts.
 Phase 5 hands downstream consumers reference-only selections with original
 candidate, stable-view and materialization provenance available externally.
 Coverage describes visual evidence roles, not extracted fields or proven semantic
-completeness. **Phase 6 is in progress; Phase 6.5 OCR/VLM fusion is next and not started.**
+completeness. **Phase 6 is in progress; Phase 6.5 OCR/VLM fusion and cross-check are complete.**
 
 ---
 
 ## Phase 6 — OCR + Complete Ticket Extraction
 
-Status: IN PROGRESS. The following describes the OCR/VLM branch architecture.
-Phase 6.4b Gemini API integration is complete; OCR/VLM fusion is Phase 6.5 and
-has not started.
+Status: IN PROGRESS. Phase 6.4b Gemini API integration and Phase 6.5 OCR/VLM
+fusion/cross-check are complete following real-video end-to-end validation.
 
 ### Approved parallel analysis boundary
 
@@ -959,7 +958,11 @@ the configured Google Gemini API with the production `fr24_vlm_v1` prompt. The
 application does not sample frames for VLM inference. Gemini is an independent
 consumer, not an OCR fallback, and receives no OCR values. Its structured JSON is
 parsed source-faithfully into VLM observations. This is the sole MVP VLM path;
-model, prompt and runtime optimization is deferred to post-MVP Stage 11.
+model, prompt and runtime optimization is deferred to post-MVP Stage 11. Pass 1
+uses JSON mode with its existing Gemini `responseSchema`. Pass 2 uses JSON mode
+without `responseSchema`, and its production parser validates the full review
+contract. The full Pass 2 schema was rejected during validation while schema-free
+JSON mode succeeded on the same continuous Investigation video.
 
 Future deterministic analysis context may package Investigation boundaries,
 representative timestamps, stable/post-scroll views, scroll timing and map/route
