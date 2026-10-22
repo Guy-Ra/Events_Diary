@@ -25,6 +25,7 @@ ExecutionStatus = Literal[
     "success", "timeout", "runtime_error", "input_error", "invalid_response"
 ]
 VLMFieldStatus = Literal["observed", "unavailable", "ambiguous"]
+VisualRouteStatus = Literal["observed", "inferred", "not_visible"]
 VLMParseStatus = Literal[
     "not_attempted", "valid_json", "recovered_markdown_fence", "missing_keys",
     "invalid_json", "unsupported_top_level_shape",
@@ -223,6 +224,64 @@ class VLMFieldObservation:
 
 
 @dataclass(frozen=True)
+class VLMVisualRouteClaim:
+    """One map-derived route claim with explicit observation/inference status."""
+
+    value: str | None
+    status: VisualRouteStatus
+
+    def __post_init__(self) -> None:
+        """Keep unsupported or invisible route claims explicitly empty."""
+        if self.status not in ("observed", "inferred", "not_visible"):
+            raise ValueError("Unsupported visual route status.")
+        if self.value is not None and (not isinstance(self.value, str) or not self.value.strip()):
+            raise ValueError("Visual route value must be nonempty text or None.")
+        if self.status == "not_visible" and self.value is not None:
+            raise ValueError("not_visible visual route claims must have a null value.")
+        if self.status in ("observed", "inferred") and self.value is None:
+            raise ValueError("Visible or inferred visual route claims require a value.")
+
+
+@dataclass(frozen=True)
+class VLMVisualRouteObservation:
+    """Source-specific visual map/route claims from one full-video VLM pass."""
+
+    direction_sector: VLMVisualRouteClaim
+    direction_text: VLMVisualRouteClaim
+    route_description: VLMVisualRouteClaim
+    departure_context: VLMVisualRouteClaim
+    investigation_index: int
+    source_video: Path
+    source_start_s: float
+    source_end_s: float
+    model_name: str
+    model_revision: str | None
+    prompt_version: str
+
+    def __post_init__(self) -> None:
+        """Validate each independent route claim and match its Pass 1 provenance."""
+        for name in ("direction_sector", "direction_text", "route_description", "departure_context"):
+            if not isinstance(getattr(self, name), VLMVisualRouteClaim):
+                raise TypeError(f"{name} must be VLMVisualRouteClaim.")
+        if self.direction_sector.value is not None and self.direction_sector.value.upper() not in {
+            "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+        }:
+            raise ValueError("direction_sector must be a 16-point compass sector or None.")
+        _index("investigation_index", self.investigation_index)
+        _path("source_video", self.source_video)
+        _time("source_start_s", self.source_start_s)
+        _time("source_end_s", self.source_end_s)
+        if self.source_end_s <= self.source_start_s:
+            raise ValueError("source_end_s must be greater than source_start_s.")
+        for name in ("model_name", "prompt_version"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
+                raise ValueError(f"{name} must be a nonempty string.")
+        if self.model_revision is not None and not isinstance(self.model_revision, str):
+            raise TypeError("model_revision must be a string or None.")
+
+
+@dataclass(frozen=True)
 class VLMInvestigationResult:
     """Complete raw and parsed VLM output for one Investigation.
 
@@ -234,6 +293,7 @@ class VLMInvestigationResult:
     raw_result: RawVLMResult
     observations: tuple[VLMFieldObservation, ...] = ()
     parse_diagnostics: VLMParseDiagnostics | None = None
+    visual_route: VLMVisualRouteObservation | None = None
 
     def __post_init__(self) -> None:
         """Freeze observation storage and reject cross-Investigation provenance."""
@@ -241,10 +301,12 @@ class VLMInvestigationResult:
             raise TypeError("raw_result must be RawVLMResult.")
         if self.parse_diagnostics is not None and not isinstance(self.parse_diagnostics, VLMParseDiagnostics):
             raise TypeError("parse_diagnostics must be VLMParseDiagnostics or None.")
+        if self.visual_route is not None and not isinstance(self.visual_route, VLMVisualRouteObservation):
+            raise TypeError("visual_route must be VLMVisualRouteObservation or None.")
         observations = tuple(self.observations)
         if any(not isinstance(item, VLMFieldObservation) for item in observations):
             raise TypeError("observations must contain VLMFieldObservation records.")
-        if self.raw_result.execution_status != "success" and observations:
+        if self.raw_result.execution_status != "success" and (observations or self.visual_route is not None):
             raise ValueError("Failed VLM execution must have empty observations.")
         for item in observations:
             if (item.investigation_index != self.raw_result.investigation_index
@@ -255,6 +317,16 @@ class VLMInvestigationResult:
                     or item.model_revision != self.raw_result.model_revision
                     or item.prompt_version != self.raw_result.prompt_version):
                 raise ValueError("Observation provenance must match its raw Investigation result.")
+        if self.visual_route is not None:
+            route = self.visual_route
+            if (route.investigation_index != self.raw_result.investigation_index
+                    or route.source_video != self.raw_result.source_video
+                    or route.source_start_s != self.raw_result.source_start_s
+                    or route.source_end_s != self.raw_result.source_end_s
+                    or route.model_name != self.raw_result.model_name
+                    or route.model_revision != self.raw_result.model_revision
+                    or route.prompt_version != self.raw_result.prompt_version):
+                raise ValueError("Visual route provenance must match its raw Investigation result.")
         object.__setattr__(self, "observations", observations)
 
     @property

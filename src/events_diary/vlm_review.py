@@ -10,13 +10,23 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
-from events_diary.vlm import RawVLMResult, VLMRequest
+from events_diary.track_direction import (
+    DirectionConsistency,
+    compare_track_direction,
+    derive_track_direction,
+)
+from events_diary.vlm import (
+    RawVLMResult,
+    VLMInvestigationResult,
+    VLMRequest,
+    VLMVisualRouteObservation,
+)
 from events_diary.vlm_parsing import VLM_FIELD_MAPPING
 from events_diary.vlm_prompts import VLM_BOOLEAN_FIELDS
 
@@ -31,6 +41,10 @@ HIGH_PRIORITY_STATUSES = frozenset({
 })
 REVIEW_FIELD_NAMES = tuple(VLM_FIELD_MAPPING.values())
 _REVIEW_FIELD_NAME_SET = frozenset(REVIEW_FIELD_NAMES)
+REVIEW_ROUTE_FIELDS = (
+    "visual_flight_direction_sector", "visual_flight_direction_text",
+    "visual_route_description", "visual_departure_context",
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +111,8 @@ class VLMReviewContext:
     source_start_s: float
     source_end_s: float
     fields: Mapping[str, VLMReviewFieldContext]
+    visual_route: VLMVisualRouteObservation | None = None
+    direction_consistency: DirectionConsistency | None = None
 
     def __post_init__(self) -> None:
         """Freeze the field map and validate its keys and source interval."""
@@ -122,11 +138,15 @@ class VLMReviewContext:
             for key, item in fields.items()
         ):
             raise ValueError("Review context keys must match their field_name.")
+        if self.visual_route is not None and not isinstance(self.visual_route, VLMVisualRouteObservation):
+            raise TypeError("visual_route must be VLMVisualRouteObservation or None.")
         object.__setattr__(self, "fields", MappingProxyType(fields))
 
 
 def build_vlm_review_context(
     fused_result: FusedInvestigationResult,
+    *,
+    pass1_result=None,
 ) -> VLMReviewContext:
     """Build clean serializable context from a fusion result, without source copies."""
     required = (
@@ -134,6 +154,15 @@ def build_vlm_review_context(
     )
     if any(not hasattr(fused_result, name) for name in required):
         raise TypeError("fused_result must be a FusedInvestigationResult-like record.")
+    if pass1_result is not None and not isinstance(pass1_result, VLMInvestigationResult):
+        raise TypeError("pass1_result must be VLMInvestigationResult or None.")
+    if pass1_result is not None and (
+        pass1_result.investigation_index != fused_result.investigation_id
+        or pass1_result.raw_result.source_video != fused_result.source_video
+        or pass1_result.source_start_s != fused_result.start_time_s
+        or pass1_result.source_end_s != fused_result.end_time_s
+    ):
+        raise ValueError("Pass 1 and fusion provenance must match for review context.")
     contexts: dict[str, VLMReviewFieldContext] = {}
     for name in REVIEW_FIELD_NAMES:
         fused = fused_result.fields.get(name)
@@ -172,17 +201,37 @@ def build_vlm_review_context(
             vlm_evidence_time_s=vlm.evidence_time_s if vlm is not None else None,
             diagnostics=fused.diagnostics,
         )
+    visual_route = pass1_result.visual_route if pass1_result is not None else None
+    track_fused = fused_result.fields.get("TRACK")
+    derived = derive_track_direction(track_fused.ocr_observation) if (
+        track_fused is not None and track_fused.ocr_observation is not None
+    ) else None
+    visual_sector = (
+        visual_route.direction_sector.value
+        if visual_route is not None and visual_route.direction_sector.status in ("observed", "inferred")
+        else None
+    )
+    visual_status = (
+        visual_route.direction_sector.status if visual_route is not None else "not_visible"
+    )
+    direction_consistency = compare_track_direction(
+        derived, visual_sector, visual_direction_status=visual_status
+    )
     return VLMReviewContext(
         investigation_id=fused_result.investigation_id,
         source_video=fused_result.source_video,
         source_start_s=fused_result.start_time_s,
         source_end_s=fused_result.end_time_s,
         fields=contexts,
+        visual_route=visual_route,
+        direction_consistency=direction_consistency,
     )
 
 
 def _context_payload(context: VLMReviewContext) -> dict[str, object]:
     """Convert review context to JSON-safe values without exposing model objects."""
+    route = context.visual_route
+    consistency = context.direction_consistency
     return {
         "investigation_id": context.investigation_id,
         "source_video": str(context.source_video),
@@ -209,6 +258,20 @@ def _context_payload(context: VLMReviewContext) -> dict[str, object]:
             }
             for name, item in context.fields.items()
         },
+        "visual_route": ({
+            "visual_flight_direction_sector": {"value": route.direction_sector.value, "status": route.direction_sector.status},
+            "visual_flight_direction_text": {"value": route.direction_text.value, "status": route.direction_text.status},
+            "visual_route_description": {"value": route.route_description.value, "status": route.route_description.status},
+            "visual_departure_context": {"value": route.departure_context.value, "status": route.departure_context.status},
+        } if route is not None else None),
+        "track_direction_cross_check": ({
+            "status": consistency.status,
+            "derived_track_direction": consistency.derived_direction.text if consistency.derived_direction else None,
+            "derived_track_sector": consistency.derived_direction.sector if consistency.derived_direction else None,
+            "visual_direction_sector": consistency.visual_direction_sector,
+            "visual_direction_status": consistency.visual_direction_status,
+            "instruction": "Compare the two preserved sources; do not overwrite either source or choose a winner.",
+        } if consistency is not None else {"status": "unavailable"}),
     }
 
 
@@ -233,7 +296,9 @@ For temporal_mismatch fields, inspect around the supplied OCR point time when av
 Review context JSON:
 {json.dumps(_context_payload(context), ensure_ascii=False, separators=(',', ':'))}
 
-Return one JSON object with a `fields` object keyed by all canonical field names shown in the context. Each value must contain reviewed_value, review_status, evidence_quality, evidence_time_s, and notes. Use confirmed, corrected, unresolved, or not_visible for review_status. Use clear, partial, weak, or not_visible for evidence_quality. Values may be null when unresolved or not visible. Review all fields."""
+Review the map separately from ticket fields. Recheck each visual route claim and the deterministic TRACK-direction comparison against the full video. Preserve observed versus inferred versus not_visible for route claims, and report direction consistency without selecting either source as authoritative. Never place map-derived context in ticket origin/destination fields.
+
+Return one JSON object with a `fields` object keyed by all canonical ticket field names shown in the context, and a separate `visual_route` object keyed by the four visual route field names. Each review item must contain reviewed_value, review_status, evidence_quality, evidence_time_s, and notes. Use confirmed, corrected, unresolved, or not_visible for review_status. Use clear, partial, weak, or not_visible for evidence_quality. Values may be null when unresolved or not visible. Review every ticket and visual route field."""
 
 
 @dataclass(frozen=True)
@@ -283,11 +348,15 @@ class VLMReviewRequest:
 def build_vlm_review_request(
     base_request: VLMRequest,
     fused_result: FusedInvestigationResult,
+    *,
+    pass1_result: VLMInvestigationResult,
 ) -> VLMReviewRequest:
     """Create Pass 2 request from Pass 1's complete clip and cross-check result."""
     if not isinstance(base_request, VLMRequest):
         raise TypeError("base_request must be VLMRequest.")
-    context = build_vlm_review_context(fused_result)
+    if not isinstance(pass1_result, VLMInvestigationResult):
+        raise TypeError("pass1_result must be VLMInvestigationResult.")
+    context = build_vlm_review_context(fused_result, pass1_result=pass1_result)
     if (
         context.investigation_id != base_request.investigation_index
         or context.source_video != base_request.source_video
@@ -346,18 +415,51 @@ class VLMReviewObservation:
 
 
 @dataclass(frozen=True)
+class VLMRouteReviewObservation:
+    """Pass 2 review of one map-derived claim, kept outside ticket fields."""
+
+    field_name: str
+    reviewed_value: str | None
+    review_status: Literal["confirmed", "corrected", "unresolved", "not_visible"]
+    evidence_quality: Literal["clear", "partial", "weak", "not_visible"]
+    observation_status: Literal["observed", "inferred", "not_visible"]
+
+    def __post_init__(self) -> None:
+        """Validate route review identity and preserve evidence-status distinctions."""
+        if self.field_name not in REVIEW_ROUTE_FIELDS:
+            raise ValueError("field_name must identify a visual route field.")
+        if self.review_status not in REVIEW_STATUSES or self.evidence_quality not in EVIDENCE_QUALITIES:
+            raise ValueError("Unsupported route review status or evidence quality.")
+        if self.observation_status not in ("observed", "inferred", "not_visible"):
+            raise ValueError("Unsupported route observation status.")
+        if self.reviewed_value is not None and (
+            not isinstance(self.reviewed_value, str) or not self.reviewed_value.strip()
+        ):
+            raise ValueError("reviewed_value must be nonempty text or None.")
+        if self.observation_status == "not_visible" and self.reviewed_value is not None:
+            raise ValueError("not_visible route review must have a null reviewed_value.")
+
+
+@dataclass(frozen=True)
 class VLMReviewResult:
     """Pass 2 parsed fields and diagnostics with provider provenance retained."""
 
     raw_result: RawVLMResult
     reviewed_fields: Mapping[str, VLMReviewObservation]
     diagnostics: tuple[str, ...] = ()
+    route_reviews: Mapping[str, VLMRouteReviewObservation] = field(default_factory=dict)
+    direction_consistency: DirectionConsistency | None = None
 
     def __post_init__(self) -> None:
         """Freeze and validate review fields while retaining raw runtime output."""
         if not isinstance(self.raw_result, RawVLMResult):
             raise TypeError("raw_result must be RawVLMResult.")
         fields = dict(self.reviewed_fields)
+        routes = dict(self.route_reviews)
+        if self.direction_consistency is not None and not isinstance(
+            self.direction_consistency, DirectionConsistency
+        ):
+            raise TypeError("direction_consistency must be DirectionConsistency or None.")
         if any(
             not isinstance(item, VLMReviewObservation) or key != item.field_name
             for key, item in fields.items()
@@ -365,10 +467,16 @@ class VLMReviewResult:
             raise ValueError("reviewed_fields keys must match VLMReviewObservation field names.")
         if self.raw_result.execution_status != "success" and fields:
             raise ValueError("Failed Pass 2 execution must not contain reviewed fields.")
+        if any(not isinstance(item, VLMRouteReviewObservation) or key != item.field_name
+               for key, item in routes.items()):
+            raise ValueError("route_reviews keys must match VLMRouteReviewObservation names.")
+        if self.raw_result.execution_status != "success" and routes:
+            raise ValueError("Failed Pass 2 execution must not contain route reviews.")
         messages = tuple(self.diagnostics)
         if any(not isinstance(message, str) for message in messages):
             raise TypeError("diagnostics must contain strings.")
         object.__setattr__(self, "reviewed_fields", MappingProxyType(fields))
+        object.__setattr__(self, "route_reviews", MappingProxyType(routes))
         object.__setattr__(self, "diagnostics", messages)
 
     @property
@@ -431,13 +539,22 @@ def parse_vlm_review_result(
     ):
         raise ValueError("Review request and raw result provenance must match.")
     if raw_result.execution_status != "success":
-        return VLMReviewResult(raw_result, {}, ("Pass 2 execution did not succeed.",))
+        return VLMReviewResult(
+            raw_result, {}, ("Pass 2 execution did not succeed.",),
+            direction_consistency=request.context.direction_consistency,
+        )
     try:
         payload = json.loads(raw_result.raw_text or "")
     except (json.JSONDecodeError, TypeError):
-        return VLMReviewResult(raw_result, {}, ("Pass 2 response is not valid JSON.",))
+        return VLMReviewResult(
+            raw_result, {}, ("Pass 2 response is not valid JSON.",),
+            direction_consistency=request.context.direction_consistency,
+        )
     if not isinstance(payload, dict) or not isinstance(payload.get("fields"), dict):
-        return VLMReviewResult(raw_result, {}, ("Pass 2 response must contain a fields object.",))
+        return VLMReviewResult(
+            raw_result, {}, ("Pass 2 response must contain a fields object.",),
+            direction_consistency=request.context.direction_consistency,
+        )
 
     fields: dict[str, VLMReviewObservation] = {}
     diagnostics: list[str] = []
@@ -470,4 +587,28 @@ def parse_vlm_review_result(
             fields[name] = observation
         except (TypeError, ValueError):
             diagnostics.append(f"Invalid review field values: {name}.")
-    return VLMReviewResult(raw_result, fields, tuple(diagnostics))
+    routes: dict[str, VLMRouteReviewObservation] = {}
+    route_payload = payload.get("visual_route")
+    if not isinstance(route_payload, dict):
+        diagnostics.append("Pass 2 response must contain a visual_route object.")
+    else:
+        for name in REVIEW_ROUTE_FIELDS:
+            item = route_payload.get(name)
+            if not isinstance(item, dict):
+                diagnostics.append(f"Missing or invalid visual route review: {name}.")
+                continue
+            try:
+                observation = VLMRouteReviewObservation(
+                    field_name=name,
+                    reviewed_value=item.get("reviewed_value"),
+                    review_status=item.get("review_status"),
+                    evidence_quality=item.get("evidence_quality"),
+                    observation_status=item.get("observation_status"),
+                )
+                routes[name] = observation
+            except (TypeError, ValueError):
+                diagnostics.append(f"Invalid visual route review values: {name}.")
+    return VLMReviewResult(
+        raw_result, fields, tuple(diagnostics), routes,
+        request.context.direction_consistency,
+    )

@@ -51,6 +51,7 @@ from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
     FR24_VLM_REVIEW_V1,
     REVIEW_FIELD_NAMES,
+    REVIEW_ROUTE_FIELDS,
     build_vlm_review_request,
     parse_vlm_review_result,
 )
@@ -160,6 +161,7 @@ def _raw_payload(parsed, diagnostics, successful_attempt, attempt_records, total
             "error": raw.error,
         },
         "observations": [_vlm_record(item) for item in parsed.observations],
+        "visual_route": _jsonable(parsed.visual_route),
         "parse_diagnostics": _jsonable(parsed.parse_diagnostics),
         "provider_diagnostics": {
             "model_version": diagnostics.model_version,
@@ -587,6 +589,7 @@ def main() -> int:
         and pass1.parse_diagnostics is not None
         and pass1.parse_diagnostics.status in ("valid_json", "recovered_markdown_fence")
         and len(pass1.observations) == len(REVIEW_FIELD_NAMES)
+        and pass1.visual_route is not None
     )
     if not p1_valid:
         attempt_rows = [
@@ -677,7 +680,7 @@ def main() -> int:
         },
     })
 
-    review_request = build_vlm_review_request(request, fusion_result)
+    review_request = build_vlm_review_request(request, fusion_result, pass1_result=pass1)
     _json_write(RUN_DIR / "vlm_review_context.json", {
         "investigation_id": review_request.context.investigation_id,
         "source_video": str(review_request.context.source_video),
@@ -687,6 +690,8 @@ def main() -> int:
             name: _jsonable(item) | {"priority": item.priority}
             for name, item in review_request.context.fields.items()
         },
+        "visual_route": _jsonable(review_request.context.visual_route),
+        "track_direction_cross_check": _jsonable(review_request.context.direction_consistency),
     })
 
     print("\n=== VLM PASS 2 REVIEW ===")
@@ -711,6 +716,8 @@ def main() -> int:
             "error": pass2.raw_result.error,
         },
         "reviewed_fields": {name: _review_record(item) for name, item in pass2.reviewed_fields.items()},
+        "route_reviews": _jsonable(pass2.route_reviews),
+        "direction_consistency": _jsonable(pass2.direction_consistency),
         "diagnostics": pass2.diagnostics,
         "provider_diagnostics": {
             "model_version": p2diag.model_version,
@@ -762,6 +769,7 @@ def main() -> int:
         pass2.raw_result.execution_status == "success"
         and len(pass2.reviewed_fields) == len(REVIEW_FIELD_NAMES)
         and all(name in pass2.reviewed_fields for name in REVIEW_FIELD_NAMES)
+        and set(pass2.route_reviews) == set(REVIEW_ROUTE_FIELDS)
         and not pass2.diagnostics
     )
     if not p2_valid:

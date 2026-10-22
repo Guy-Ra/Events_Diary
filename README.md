@@ -26,8 +26,16 @@ provisional; stable views do not prove loading completeness. The complete-video
 Gemini VLM path and Phase 6.5 OCR/VLM fusion/cross-check are implemented and
 validated on real video.
 
-**Current: Phase 6 - OCR + Complete Ticket Extraction (IN PROGRESS). Phase 6.4b
-Gemini integration and Phase 6.5 fusion/cross-check are complete.**
+**Current: Phase 6 — Complete Investigation Understanding (implementation in
+progress).** The approved scope includes deterministic OCR TRACK-to-compass
+conversion, map/visible-route observations in the existing Pass 1 call, route
+review in the existing Pass 2 call, and a provenance-preserving direction
+cross-check. Real provider validation for these additions, Phase 6.6 and Phase
+6.7 remains pending Gemini quota. No extra VLM call is planned.
+
+The former standalone route/direction work is absorbed into Phase 6. The remaining
+roadmap is Phase 7 (absorbed former Phase 8 boundary), Phase 8 aircraft entity
+matching, Phase 9 canonical output, and Phase 10 post-MVP system optimization.
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,
@@ -41,7 +49,7 @@ The system is intended to:
 
 - detect aircraft investigation events in Flightradar24 screen recordings;
 - extract structured information from the aircraft ticket;
-- analyze route geometry and movement direction;
+- describe visible route context and movement direction;
 - use OCR, computer vision, and selective VLM assistance;
 - identify repeated investigations of the same aircraft;
 - generate a canonical structured session record;

@@ -18,6 +18,7 @@ from events_diary.gemini_api import (
 from events_diary.vlm import VLMRequest
 from events_diary.vlm_prompts import (
     VLM_BOOLEAN_FIELDS,
+    VLM_ROUTE_FIELDS,
     VLM_TEXT_FIELDS,
     build_vlm_prompt,
 )
@@ -106,8 +107,10 @@ def test_request_sends_one_video_and_prompt_and_preserves_utf8_response(tmp_path
     assert prompt_parts == [build_vlm_prompt("fr24_vlm_v1")]
     assert set(body) == {"contents", "generationConfig"}
     assert config == {"responseMimeType": "application/json", "responseSchema": GEMINI_RESPONSE_SCHEMA}
-    assert set(GEMINI_RESPONSE_SCHEMA["required"]) == set(VLM_TEXT_FIELDS + VLM_BOOLEAN_FIELDS)
-    assert all(prop["nullable"] for prop in GEMINI_RESPONSE_SCHEMA["properties"].values())
+    assert set(GEMINI_RESPONSE_SCHEMA["required"]) == set(VLM_TEXT_FIELDS + VLM_BOOLEAN_FIELDS) | {"visual_route"}
+    assert all(GEMINI_RESPONSE_SCHEMA["properties"][name]["nullable"]
+               for name in VLM_TEXT_FIELDS + VLM_BOOLEAN_FIELDS)
+    assert set(GEMINI_RESPONSE_SCHEMA["properties"]["visual_route"]["required"]) == set(VLM_ROUTE_FIELDS)
     assert result.raw_result.raw_text == generated_text
     assert result.raw_result.model_revision == "gemini-flash-test-version"
     assert result.diagnostics.total_token_count == 20

@@ -8,7 +8,11 @@ import pytest
 
 from events_diary import gemini_api
 from events_diary.config import ROI, VLMAPISettings
-from events_diary.fusion import FusedFieldObservation, FusedInvestigationResult
+from events_diary.fusion import (
+    FusedFieldObservation,
+    FusedInvestigationResult,
+    resolve_investigation,
+)
 from events_diary.gemini_api import GeminiAPIRuntime
 from events_diary.ocr_fields import extract_ocr_fields
 from events_diary.ticket_ocr import OCRDetection, OCRTicketResult
@@ -17,6 +21,8 @@ from events_diary.vlm import (
     VLMFieldObservation,
     VLMInvestigationResult,
     VLMRequest,
+    VLMVisualRouteClaim,
+    VLMVisualRouteObservation,
 )
 from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
@@ -103,8 +109,15 @@ def fusion_result():
         prompt_version="fr24_vlm_v1",
         raw_text='{"registration":"4X-BAL"}',
     )
+    pass1_route = VLMVisualRouteObservation(
+        VLMVisualRouteClaim("ESE", "observed"),
+        VLMVisualRouteClaim("Generally east-southeast", "inferred"),
+        VLMVisualRouteClaim("Trail extends west of aircraft", "observed"),
+        VLMVisualRouteClaim(None, "not_visible"),
+        2, SOURCE, 12.0, 20.4, MODEL, REVISION, "fr24_vlm_v1",
+    )
     pass1_result = VLMInvestigationResult(
-        raw_pass1, (pass1_registration, pass1_track)
+        raw_pass1, (pass1_registration, pass1_track), visual_route=pass1_route
     )
     fields = {
         "REGISTRATION": FusedFieldObservation(
@@ -124,9 +137,10 @@ def fusion_result():
 
 def review_request(fused=None):
     """Build one full-video review request from matching Pass 1 provenance."""
-    if fused is None:
-        fused = fusion_result()[0]
-    return build_vlm_review_request(base_request(), fused)
+    generated_fused, pass1, _ = fusion_result()
+    return build_vlm_review_request(
+        base_request(), fused or generated_fused, pass1_result=pass1
+    )
 
 
 def raw_review_result(request, text, **overrides):
@@ -159,7 +173,19 @@ def review_payload(overrides=None):
             "notes": None,
         }
     fields.update(overrides or {})
-    return {"fields": fields}
+    route = {
+        name: {
+            "reviewed_value": None,
+            "review_status": "not_visible",
+            "evidence_quality": "not_visible",
+            "observation_status": "not_visible",
+        }
+        for name in (
+            "visual_flight_direction_sector", "visual_flight_direction_text",
+            "visual_route_description", "visual_departure_context",
+        )
+    }
+    return {"fields": fields, "visual_route": route}
 
 
 def test_review_context_contains_every_canonical_field_and_priorities():
@@ -170,6 +196,10 @@ def test_review_context_contains_every_canonical_field_and_priorities():
     assert context.fields["TRACK"].priority == "high"
     assert context.fields["SQUAWK"].priority == "high"
     assert context.fields["TRACK"].fusion_status == "temporal_mismatch"
+    context = build_vlm_review_context(fused, pass1_result=fusion_result()[1])
+    assert context.visual_route.direction_sector.value == "ESE"
+    assert context.direction_consistency.status == "inconsistent"
+    assert context.direction_consistency.derived_direction.source_observation is not None
     assert HIGH_PRIORITY_STATUSES == {
         "conflict", "temporal_mismatch", "ocr_only", "vlm_only", "unavailable"
     }
@@ -296,6 +326,39 @@ def test_parser_preserves_source_faithful_values_and_result_provenance():
     assert result.model_name == MODEL
     assert result.model_revision == REVISION
     assert result.prompt_version == FR24_VLM_REVIEW_V1
+    assert set(result.route_reviews) == {
+        "visual_flight_direction_sector", "visual_flight_direction_text",
+        "visual_route_description", "visual_departure_context",
+    }
+
+
+def test_pass2_review_context_keeps_route_and_track_cross_check_separate_from_ticket():
+    request = review_request()
+    assert request.context.visual_route.direction_sector.value == "ESE"
+    assert request.context.direction_consistency.status == "inconsistent"
+    assert request.context.direction_consistency.derived_direction.text == "West"
+    context_json = json.loads(request.prompt.split("Review context JSON:\n", 1)[1].split("\n\nReview the map", 1)[0])
+    assert context_json["fields"]["origin_airport_code"]["ocr_raw_value"] is None
+    assert context_json["visual_route"]["visual_departure_context"]["status"] == "not_visible"
+    assert context_json["track_direction_cross_check"]["status"] == "inconsistent"
+
+
+def test_pass2_parser_preserves_route_claim_statuses():
+    request = review_request()
+    payload = review_payload()
+    payload["visual_route"]["visual_flight_direction_sector"] = {
+        "reviewed_value": "ESE", "review_status": "confirmed",
+        "evidence_quality": "clear", "observation_status": "observed",
+    }
+    result = parse_vlm_review_result(request, raw_review_result(request, json.dumps(payload)))
+    item = result.route_reviews["visual_flight_direction_sector"]
+    assert item.reviewed_value == "ESE"
+    assert item.observation_status == "observed"
+    final = resolve_investigation(fusion_result()[0], result)
+    assert final.direction_consistency.status == "inconsistent"
+    assert final.direction_consistency.derived_direction.source_observation.raw_value_text == (
+        "278" + chr(0x05B2) + chr(176)
+    )
 
 
 def test_parser_rejects_malformed_json_with_diagnostic():
@@ -318,7 +381,7 @@ def test_pass1_and_ocr_observations_remain_unchanged_after_review_request_build(
     fused, pass1, ocr = fusion_result()
     original_pass1 = tuple((item.field_name, item.raw_value) for item in pass1.observations)
     original_ocr = (ocr.raw_label_text, ocr.raw_value_text, ocr.status)
-    request = build_vlm_review_request(base_request(), fused)
+    request = build_vlm_review_request(base_request(), fused, pass1_result=pass1)
     assert request.context.fields["REGISTRATION"].ocr_raw_value == " 4X-BAL "
     assert tuple((item.field_name, item.raw_value) for item in pass1.observations) == original_pass1
     assert (ocr.raw_label_text, ocr.raw_value_text, ocr.status) == original_ocr
@@ -329,8 +392,8 @@ def test_gemini_review_request_sends_full_video_and_json_mode_without_schema(tmp
     video_bytes = b"complete continuous Investigation MP4"
     clip.write_bytes(video_bytes)
     base = base_request(video_clip_path=clip)
-    fused, _, _ = fusion_result()
-    request = build_vlm_review_request(base, fused)
+    fused, pass1, _ = fusion_result()
+    request = build_vlm_review_request(base, fused, pass1_result=pass1)
     captured = []
 
     class FakeResponse:

@@ -9,7 +9,7 @@
 Events Diary is a local visual-intelligence system designed to analyze Flightradar24 screen recordings and convert operator activity into a structured chronological aircraft event journal. The product is intended to understand what the operator investigated, extract the information visible in the ticket and map, preserve uncertainty and provenance, associate repeated investigations with the same aircraft where justified, and generate both machine-readable and human-readable outputs.
 
 The system combines deterministic computer vision, temporal reasoning, OCR,
-route geometry and an independent full-Investigation VLM branch. The MVP VLM
+visible route context and an independent full-Investigation VLM branch. The MVP VLM
 path sends continuous video directly to the Google Gemini API. Separate evidence
 provenance supports later cross-checking without making either branch depend on
 the other.
@@ -34,7 +34,7 @@ Key challenges:
 Core goals:
 - Detect Investigation Events and their time boundaries.
 - Extract complete ticket information across scroll states.
-- Analyze route geometry and direction where supported.
+- Analyze visible map/route context and derive compass direction from OCR TRACK.
 - Use OCR, CV and VLM as complementary evidence sources.
 - Keep runtime configuration explicit without changing evidence semantics.
 - Link repeated aircraft investigations only when justified.
@@ -76,8 +76,8 @@ Initial assumptions:
 - Adaptive evidence extraction.
 - Role-based frame selection.
 - OCR ticket extraction and consensus.
-- Route/direction analysis.
-- Selective or parallel VLM assistance.
+- Deterministic TRACK-to-compass derivation and visual route understanding.
+- One full-Investigation VLM branch that analyzes ticket and map together.
 - Evidence fusion.
 - Entity matching.
 - Canonical output and reports.
@@ -113,14 +113,9 @@ Role-Based Evidence Selection
         │
    ┌────┴───────────────┐
    ▼                    ▼
-Ticket OCR         Map / Route CV
-   │                    │
-   └───────┬────────────┘
-           ▼
- VLM Assistance / Parallel Interpretation
-           │
-           ▼
- Evidence Fusion + Cross-Check
+Ticket OCR                 Full-video VLM (ticket + map / route)
+   |                                      |
+   +---------- Ticket fusion + route-direction cross-check
            │
            ▼
  Aircraft Entity Matching
@@ -154,11 +149,23 @@ Operational Log  Detailed Report
 
 ## 9. OCR, CV and VLM Responsibilities
 
-**CV:** temporal/UI understanding, pan/zoom/scroll, route geometry, direction.
+**CV:** deterministic temporal/UI understanding, pan/zoom/scroll and visual timing.
 
 **OCR:** visible ticket text; preserve raw observations and combine across frames.
 
-**VLM:** independent full-Investigation interpretation through the Google Gemini API. It receives the continuous Investigation video and the versioned `fr24_vlm_v1` prompt, not OCR values. Its structured response remains source-specific evidence for later fusion.
+**VLM:** independent full-Investigation interpretation through the Google Gemini API. It receives the continuous Investigation video and the versioned `fr24_vlm_v1` prompt, not OCR values. Its structured ticket and map/route responses remain source-specific evidence for later fusion.
+
+Phase 6 Pass 1 analyzes both ticket content and the visible map / selected-aircraft
+route in its existing full-video call. Visual direction sector/text, route
+description and departure context are separate VLM observations with observed,
+inferred or not_visible status. Map-derived departure context never fills or
+overwrites ticket origin or destination. Pass 2 reviews these claims in its
+existing full-video review call; no route-only call or Pass 3 is added.
+
+OCR TRACK remains the original degree observation. Events Diary derives a
+16-point compass direction deterministically and marks it as derived from OCR.
+The derived value and VLM visual direction are compared without overwriting either
+source. A missing side yields an unavailable comparison.
 
 **Fusion layer:** reconcile evidence with provenance and conflict handling.
 
@@ -172,7 +179,7 @@ not unrestricted authority.
 
 The MVP VLM configuration selects the Google Gemini API endpoint/model and
 request timeout. Hardware-specific model execution profiles, alternate runtimes
-and optimization are deferred to post-MVP Stage 11. The canonical output schema
+and optimization are deferred to post-MVP Phase 10. The canonical output schema
 and core event semantics remain stable.
 
 ## 11. Evidence, Provenance and Confidence
@@ -236,13 +243,15 @@ A larger labeled ground-truth dataset is required before production-readiness cl
 
 - Milestone A — Visual Foundation (Phases 0–2)
 - Milestone B — Operator Activity Understanding (Phases 3–5)
-- Milestone C — Semantic Flight Understanding (Phases 6–8)
-- Milestone D — Complete MVP (Phases 9–10)
+- Milestone C — Complete Investigation Understanding (Phase 6)
+- Milestone D — Complete MVP (Phases 7–9)
 
-Stages 0–10 comprise MVP construction and end-to-end validation. **Stage 11 —
-System Optimization & Improvement** is a separate post-MVP stage and begins only
-after the MVP is complete and validated. It covers evidence-driven improvement
-of the entire system; see `docs/project_plan.md` for its detailed, open backlog.
+Phase 6 includes OCR/VLM ticket and map observations, deterministic TRACK
+direction, ticket fusion, direction cross-checking, Pass 2 review, multi-
+Investigation assembly and closure validation. The former standalone route /
+direction phase is absorbed into Phase 6. The former Phase 8–11 roadmap entries
+are renumbered as Phases 7–10; Phase 10 is System Optimization & Improvement and
+starts only after Phases 0–9 and end-to-end MVP validation.
 
 ## 16. Open Product Decisions
 
@@ -255,10 +264,8 @@ of the entire system; see `docs/project_plan.md` for its detailed, open backlog.
 
 ## Appendix A. Current Project Status
 
-Phases 0–5 are complete. Phase 6 is in progress: Phase 6.4b Gemini API integration
-and Phase 6.5 OCR/VLM fusion/cross-check are complete following real-video
-end-to-end validation. The MVP VLM path sends a complete continuous Investigation
-video directly to Gemini. Pass 1 uses JSON mode with its response schema; Pass 2
-uses JSON mode without `responseSchema`, and its production parser validates the
-full review contract. This choice follows validation where the full Pass 2 schema
-was rejected but schema-free JSON mode succeeded.
+Phases 0–5 are complete. Phase 6 implementation scope is in progress. Existing
+Gemini integration and ticket fusion have been validated on real video. The
+approved Pass 1 map/route extension, route review in Pass 2, TRACK direction
+cross-check, Phase 6.6 provider validation and Phase 6.7 closure validation are
+pending Gemini quota. Synthetic tests do not establish provider visual accuracy.

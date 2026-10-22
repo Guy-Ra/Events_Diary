@@ -17,6 +17,8 @@ from events_diary.vlm import (
     VLMInvestigationResult,
     VLMParseDiagnostics,
     VLMRequest,
+    VLMVisualRouteClaim,
+    VLMVisualRouteObservation,
 )
 
 # Prompt keys map onto existing OCR field slots when those names are compatible.
@@ -59,7 +61,7 @@ VLM_FIELD_MAPPING = MappingProxyType({
     "scroll_observed": "scroll_observed",
     "same_aircraft_throughout": "same_aircraft_throughout",
 })
-EXPECTED_VLM_FIELDS = tuple(VLM_FIELD_MAPPING)
+EXPECTED_VLM_FIELDS = (*VLM_FIELD_MAPPING, "visual_route")
 _BOOLEAN_FIELDS = frozenset(("scroll_observed", "same_aircraft_throughout"))
 _FENCED_JSON = re.compile(
     r"\A```json[ \t]*\r?\n(?P<payload>.*?)\r?\n```[ \t]*\Z",
@@ -92,7 +94,7 @@ def _decode_payload(raw_text: str | None) -> tuple[dict | None, VLMParseDiagnost
             error="Expected one JSON object at the top level.",
         )
     missing = tuple(key for key in EXPECTED_VLM_FIELDS if key not in payload)
-    unknown = tuple(sorted(key for key in payload if key not in VLM_FIELD_MAPPING))
+    unknown = tuple(sorted(key for key in payload if key not in (*VLM_FIELD_MAPPING, "visual_route")))
     status = "missing_keys" if missing else (
         "recovered_markdown_fence" if json_format == "markdown_fence" else "valid_json"
     )
@@ -110,6 +112,28 @@ def _observation_value(key: str, value: object) -> tuple[str | bool | None, str]
     if isinstance(value, str) and value.strip():
         return value, "observed"
     return None, "unavailable"
+
+
+def _route_claim(payload: object, key: str) -> VLMVisualRouteClaim:
+    """Parse one visual-route claim, conservatively abstaining on malformed data."""
+    if not isinstance(payload, dict):
+        return VLMVisualRouteClaim(None, "not_visible")
+    item = payload.get(key)
+    if not isinstance(item, dict):
+        return VLMVisualRouteClaim(None, "not_visible")
+    value, status = item.get("value"), item.get("status")
+    if status not in ("observed", "inferred", "not_visible"):
+        return VLMVisualRouteClaim(None, "not_visible")
+    if status == "not_visible":
+        return VLMVisualRouteClaim(None, "not_visible")
+    if not isinstance(value, str) or not value.strip():
+        return VLMVisualRouteClaim(None, "not_visible")
+    if key == "visual_flight_direction_sector" and value.upper() not in {
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW",
+        "SW", "WSW", "W", "WNW", "NW", "NNW",
+    }:
+        return VLMVisualRouteClaim(None, "not_visible")
+    return VLMVisualRouteClaim(value, status)
 
 
 def parse_vlm_result(request: VLMRequest, raw_result: RawVLMResult) -> VLMInvestigationResult:
@@ -154,4 +178,18 @@ def parse_vlm_result(request: VLMRequest, raw_result: RawVLMResult) -> VLMInvest
             model_revision=raw_result.model_revision,
             prompt_version=raw_result.prompt_version,
         ))
-    return VLMInvestigationResult(raw_result, tuple(observations), diagnostics)
+    route_payload = payload.get("visual_route")
+    route = VLMVisualRouteObservation(
+        direction_sector=_route_claim(route_payload, "visual_flight_direction_sector"),
+        direction_text=_route_claim(route_payload, "visual_flight_direction_text"),
+        route_description=_route_claim(route_payload, "visual_route_description"),
+        departure_context=_route_claim(route_payload, "visual_departure_context"),
+        investigation_index=raw_result.investigation_index,
+        source_video=raw_result.source_video,
+        source_start_s=raw_result.source_start_s,
+        source_end_s=raw_result.source_end_s,
+        model_name=raw_result.model_name,
+        model_revision=raw_result.model_revision,
+        prompt_version=raw_result.prompt_version,
+    )
+    return VLMInvestigationResult(raw_result, tuple(observations), diagnostics, route)

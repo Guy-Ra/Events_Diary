@@ -28,6 +28,12 @@ from events_diary.ocr_fields import OCRFieldObservation
 from events_diary.representative_selection import InvestigationSelection
 from events_diary.ticket_ocr import OCRTicketResult
 from events_diary.ticket_stable_views import TicketStableView
+from events_diary.track_direction import (
+    DerivedTrackDirection,
+    DirectionConsistency,
+    compare_track_direction,
+    derive_track_direction,
+)
 from events_diary.video import VideoMetadata
 from events_diary.vlm import VLMInvestigationResult
 from events_diary.vlm_review import VLMReviewResult
@@ -195,6 +201,32 @@ class InvestigationRecord:
     def not_available_fields(self) -> tuple[str, ...]:
         """List fields with no available evidence according to final resolution."""
         return tuple(name for name, item in self.final_fields.items() if item.final_status == "not_available")
+
+    @property
+    def derived_track_directions(self) -> tuple[DerivedTrackDirection, ...]:
+        """Return deterministic directions linked to each usable original OCR TRACK."""
+        return tuple(
+            direction
+            for observation in self.ocr_field_occurrences
+            if (direction := derive_track_direction(observation)) is not None
+        )
+
+    @property
+    def track_direction_cross_checks(self) -> tuple[DirectionConsistency, ...]:
+        """Compare each OCR-derived TRACK direction with the retained Pass 1 map claim."""
+        route = self.vlm_pass1.visual_route
+        visual_sector = (
+            route.direction_sector.value
+            if route is not None and route.direction_sector.status in ("observed", "inferred")
+            else None
+        )
+        visual_status = route.direction_sector.status if route is not None else "not_visible"
+        return tuple(
+            compare_track_direction(
+                direction, visual_sector, visual_direction_status=visual_status
+            )
+            for direction in self.derived_track_directions
+        )
 
 
 def assemble_investigation_record(

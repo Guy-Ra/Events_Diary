@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from events_diary.ocr_fields import OCRFieldObservation
+from events_diary.track_direction import DirectionConsistency
 from events_diary.vlm import VLMFieldObservation
 
 if TYPE_CHECKING:
@@ -467,6 +468,7 @@ class FinalInvestigationResult:
     fields: Mapping[str, FinalFieldResult]
     summary: FinalInvestigationSummary
     diagnostics: tuple[str, ...] = ()
+    direction_consistency: DirectionConsistency | None = None
 
     def __post_init__(self) -> None:
         """Validate field-map consistency and freeze the mapping and diagnostics."""
@@ -496,6 +498,10 @@ class FinalInvestigationResult:
             raise ValueError("fields keys must match FinalFieldResult field names.")
         if not isinstance(self.summary, FinalInvestigationSummary):
             raise TypeError("summary must be FinalInvestigationSummary.")
+        if self.direction_consistency is not None and not isinstance(
+            self.direction_consistency, DirectionConsistency
+        ):
+            raise TypeError("direction_consistency must be DirectionConsistency or None.")
         if self.summary.total_fields != len(copied):
             raise ValueError("summary.total_fields must match the number of fields.")
         messages = tuple(self.diagnostics)
@@ -632,4 +638,5 @@ def resolve_investigation(
         fields=fields,
         summary=summary,
         diagnostics=diagnostics,
+        direction_consistency=(review_result.direction_consistency if review_result else None),
     )

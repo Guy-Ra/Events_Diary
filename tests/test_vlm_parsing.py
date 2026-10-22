@@ -59,6 +59,12 @@ def full_payload(**overrides):
         "track": "281°", "squawk": "5212", "scroll_observed": True,
         "same_aircraft_throughout": True,
     })
+    values["visual_route"] = {
+        "visual_flight_direction_sector": {"value": "ESE", "status": "observed"},
+        "visual_flight_direction_text": {"value": "Generally east-southeast", "status": "inferred"},
+        "visual_route_description": {"value": "Trail extends west of aircraft", "status": "observed"},
+        "visual_departure_context": {"value": None, "status": "not_visible"},
+    }
     values.update(overrides)
     return values
 
@@ -80,19 +86,25 @@ def test_realistic_full_schema_strict_json_creates_one_observation_per_field():
     result = parse_vlm_result(request(), raw_result(text))
     fields = by_name(result)
     assert len(result.observations) == len(VLM_FIELD_MAPPING)
-    assert len(EXPECTED_VLM_FIELDS) == len(VLM_FIELD_MAPPING)
+    assert len(EXPECTED_VLM_FIELDS) == len(VLM_FIELD_MAPPING) + 1
     assert result.parse_diagnostics.status == "valid_json"
     assert result.parse_diagnostics.json_format == "strict_json"
     assert fields["airline_name"].raw_value == "Israir Airlines"
     assert fields["TRACK"].raw_value == "281°"
     assert fields["scroll_observed"].raw_value is True
     assert fields["same_aircraft_throughout"].raw_value is True
+    assert result.visual_route.direction_sector.value == "ESE"
+    assert result.visual_route.direction_sector.status == "observed"
+    assert result.visual_route.direction_text.status == "inferred"
+    assert result.visual_route.departure_context.value is None
+    assert result.visual_route.departure_context.status == "not_visible"
+    assert "origin_airport_code" in fields and fields["origin_airport_code"].raw_value == "JFK"
     assert all(item.status == "observed" for item in result.observations if item.raw_value is not None)
 
 
 def test_full_schema_nulls_are_unavailable_and_all_fields_are_present():
     result = parsed(dict.fromkeys(EXPECTED_VLM_FIELDS))
-    assert len(result.observations) == len(EXPECTED_VLM_FIELDS)
+    assert len(result.observations) == len(EXPECTED_VLM_FIELDS) - 1
     assert all(item.raw_value is None and item.status == "unavailable" for item in result.observations)
 
 

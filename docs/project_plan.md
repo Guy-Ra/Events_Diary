@@ -85,13 +85,13 @@ Includes:
 
 ```text
 Phase 6
-Phase 7
-Phase 8
 ```
 
 Outcome:
 
-The system can extract ticket information, analyze route geometry, compute direction, perform conservative inference, and fuse deterministic + VLM evidence.
+The system can complete an Investigation from source-specific ticket and map
+observations, deterministic TRACK direction, conservative cross-checking and
+structured evidence assembly.
 
 ---
 
@@ -100,8 +100,9 @@ The system can extract ticket information, analyze route geometry, compute direc
 Includes:
 
 ```text
+Phase 7
+Phase 8
 Phase 9
-Phase 10
 ```
 
 Outcome:
@@ -110,10 +111,10 @@ Repeated aircraft investigations are linked when appropriate, and the full canon
 
 ### Roadmap boundary
 
-Stages 0–10 build and close the MVP. Stage 11 begins only after end-to-end MVP
+Phases 0–9 build and close the MVP. Phase 10 begins only after end-to-end MVP
 completion and validation. The priority is to build the complete working system
 before optimizing, refactoring, strengthening or generalizing it. Non-blocking
-optimization ideas found during Stages 0–10 belong in the Stage 11 backlog; do
+optimization ideas found during Phases 0–9 belong in the Phase 10 backlog; do
 not begin that work during MVP phases unless a blocker prevents MVP completion.
 
 ---
@@ -535,8 +536,9 @@ provisional; these signals do not themselves decide Investigation Events.
 Phase 3 consumes this completed evidence layer through separate Investigation
 signals, candidates, temporal confirmation, and lifecycle construction. Phase 4
 consumes those outputs; the completed Phase 5 materializes and selects its evidence
-requests. Phase 6 is in progress: Phase 6.4b Gemini VLM integration and Phase 6.5
-OCR/VLM fusion/cross-check are complete following real-video validation.
+requests. Phase 6 implementation scope is in progress. Existing Phase 6.4b Gemini
+integration and ticket fusion are validated; route/direction provider checks remain
+pending Gemini quota.
 
 ---
 
@@ -753,175 +755,120 @@ positions are not semantically collapsed. Alignment may alias repetitive/large
 shifts. No OCR-based section semantics or map-image similarity exists, and an
 activity midpoint need not capture final/extreme map state.
 
-**Phase 6 — OCR + Complete Ticket Extraction: IN PROGRESS.** Phase 6.4b
-Production Gemini VLM Integration and Phase 6.5 OCR/VLM fusion/cross-check are
-COMPLETE following real-video validation.
+**Phase 6 — Complete Investigation Understanding: IMPLEMENTATION IN PROGRESS.**
+Core OCR/VLM ticket extraction and fusion are implemented; approved map/route
+contracts and deterministic TRACK direction are implemented locally. Provider
+validation for the new visual behavior, Phase 6.6 and Phase 6.7 is pending quota.
 
 ---
 
-# 10. Phase 6 — OCR + Complete Ticket Extraction
+# 10. Phase 6 — Complete Investigation Understanding
 
-Status: IN PROGRESS. Phase 6.4b Production Gemini VLM Integration and Phase 6.5
-OCR/VLM fusion/cross-check are COMPLETE.
+**Status: IMPLEMENTATION SCOPE IN PROGRESS; provider-dependent validation PENDING.**
+Phase 6.1–6.5 core OCR, VLM integration, fusion and conservative review are
+implemented. The approved extension adds deterministic TRACK direction and
+map/visible-route understanding to the existing two VLM passes. Do not call this
+provider-validated while Gemini quota is unavailable.
 
-## Objective
+## Objective and subphases
 
-Establish source-specific OCR observations alongside the independent Gemini VLM
-branch. Keep fusion as the later Phase 6.5 boundary.
+Phase 6 produces a structured, provenance-preserving understanding of each
+Investigation from ticket observations, map/route observations, temporal context
+and conservative cross-checking.
 
-## Approved parallel architecture
+- **6.1 OCR extraction:** read selected physical ticket frames and precise ROIs.
+- **6.2 OCR spatial structure:** retain ticket-local geometry and relationships.
+- **6.3 Structured ticket extraction:** preserve canonical fields, raw values and
+  per-occurrence provenance.
+- **6.4 VLM Pass 1:** analyze both the ticket and the full continuous
+  Investigation's map/visible historical route in the same request.
+- **6.5 Fusion, cross-check and review:** retain OCR/VLM ticket observations,
+  derive compass direction deterministically from OCR TRACK, compare it with the
+  VLM visual direction without selecting a winner, apply temporal awareness and
+  run the existing full-video Pass 2 review.
+- **6.6 Multi-Investigation assembly:** assemble independent records.
+- **6.7 End-to-end validation and closure:** validate the complete Phase 6
+  behavior after provider quota becomes available.
 
-```text
-Investigation / Phase 5 selection
+## Architecture
+
+Investigation detection / Phase 5 representative selection
   +-> selected physical frames / precise ticket ROIs -> OCR observations
-  +-> complete continuous Investigation MP4 + fr24_vlm_v1 -> Gemini API -> VLM observations
-OCR observations + VLM observations
-  -> Evidence Fusion -> cross-check / conflict handling -> structured output
-```
+  +-> full continuous Investigation video -> VLM Pass 1
+       +-> ticket observations
+       +-> separate map/visual-route observations
+OCR + VLM ticket observations -> ticket fusion / temporal cross-check
+OCR TRACK -> deterministic compass direction
+deterministic TRACK direction <-> VLM visual direction -> consistency result
+full video + review context -> existing VLM Pass 2 review of ticket and route
+all evidence -> conservative structured Investigation output
 
-The branches can run in parallel and neither consumes the other's output as an
-execution prerequisite. Each branch can fail or be unavailable without discarding
-the other's evidence. The MVP VLM path sends the complete continuous Investigation
-video directly to the configured Google Gemini API with `fr24_vlm_v1`; the VLM is
-not an OCR fallback and receives no OCR values. The application does not sample
-video frames for VLM inference. Model, prompt and runtime optimization is deferred
-to post-MVP Stage 11. Pass 1 uses JSON mode with its existing `responseSchema`;
-Pass 2 uses JSON mode without `responseSchema`, and its production parser
-validates the complete review contract. Real-video validation showed that the
-full Pass 2 schema was rejected while schema-free JSON mode succeeded.
+OCR and VLM remain independent consumers and can run in parallel. Neither
+requires the other's output. One branch can fail without discarding the other.
+Phases 1–5 require no redesign: the deterministic pipeline remains authoritative
+for Investigation boundaries, stable views, representative selection and visual
+activity timing. Deterministic guidance can be packaged for VLM context without
+modifying upstream models, and must remain distinguishable from VLM-observed
+evidence. Any future extracted clip must preserve original-video time mapping.
 
-## Planned OCR work
+## TRACK direction and provenance
 
-- Read precise ticket ROIs from Phase 5 representative physical frames.
-- Preserve raw text/value, source-specific confidence, video/Investigation and
-  candidate/frame provenance, actual timestamp and ROI/bounding box as applicable.
-- Retain unreadable/missing evidence without inventing values.
-- Preserve static/dynamic field distinctions and links from parsing,
-  normalization or cross-frame consensus to original observations.
-- Produce evidence for later fusion, without treating OCR as final truth or
-  adding a VLM dependency to OCR execution.
+TRACK remains the original OCR field and raw OCR text is never replaced. For a
+usable numeric TRACK heading in [0, 360], select the nearest of 16 compass
+directions using sectors centered on each bearing, with exact halfway boundaries
+rounded clockwise. Thus 103 degrees maps to ESE / East-Southeast; 360 wraps to
+North. The derived value links back to the original OCR field and is marked
+deterministic_derived_from_ocr_track; missing, malformed and out-of-range
+values produce no derived direction.
 
-## Integration boundaries
+The VLM visual direction, textual direction description, visible-route
+description and departure context are separate VLM claims. Each has its own
+observed, inferred or not_visible status. not_visible carries a null value.
+Visual departure context never fills or changes ticket-derived origin or
+destination. A direction cross-check reports consistent, inconsistent or
+unavailable and preserves both source values; it does not resolve conflicts.
 
-Phases 1–5 require no redesign and remain authoritative for boundaries, stable
-views, selection and visual timing. Future analysis context may package existing
-deterministic guidance without modifying upstream models.
+## Fusion and evidence rules
 
-The MVP passes the continuous Investigation MP4 and retains its original-video
-time bounds. It is not reconstructed from selected frames. Any future clip
-extraction must preserve mapping to original-video time and actual bounds. Future
-deterministic analysis context must remain separate from VLM observations.
+Pass 2 reviews ticket fields and the visual-route claims in the same existing
+full-video request. No additional VLM request or Pass 3 is introduced. Route
+observations stay outside ticket field fusion and final ticket origin/destination.
+Fusion does not silently overwrite conflicting sources. Keep UNREADABLE,
+NOT_PRESENT, OBSERVED, EXPLICIT_NA, AMBIGUOUS, CONFLICT, INFERRED and ENRICHED
+distinct. Different dynamic values observed at different times are not
+automatically conflicts. OCR confidence, VLM confidence and geometric/quality
+measures are different quantities and must not be treated as interchangeable.
 
-Separate future OCR/VLM observations preserve provenance and confidence meaning.
-UNREADABLE, NOT_PRESENT, OBSERVED, EXPLICIT_NA, AMBIGUOUS, CONFLICT, INFERRED and
-ENRICHED remain distinct. Dynamic values at different times are not automatically
-conflicts. OCR confidence, VLM confidence and geometric/quality diagnostics are
-not interchangeable.
+Do not convert free-text route descriptions into rigid geographic geometry.
+Classic-CV trail extraction, geocoding, airport databases and map-coordinate
+reconstruction are outside this approved change.
 
-## Done when
+## Phase 6 completion gate
 
-Readable ticket sections across selected views can be combined into traceable
-Investigation-level OCR observations, preserving uncertainty and provenance for
-later fusion. Fusion and
-cross-checking retain disagreements rather than silently overwriting either
-source. Phase 6.5 OCR/VLM fusion and cross-check are complete; subsequent Phase 6
-work remains in progress.
+Implementation scope includes the approved route/direction functionality.
+Provider-dependent validation remains PENDING:
 
----
+- real Pass 1 visual map/route understanding;
+- real Pass 2 review of route/direction;
+- real deterministic TRACK versus VLM visual-direction comparison;
+- Phase 6.6 multi-Investigation provider validation;
+- Phase 6.7 end-to-end closure validation.
 
-# 11. Phase 7 — Route Extraction & Direction
-
-## Objective
-
-Extract route geometry and derive reliable direction.
-
-## Direction classes
-
-```text
-N
-NE
-E
-SE
-S
-SW
-W
-NW
-```
-
-## Candidate CV pipeline
-
-```text
-map crop
-→ route color segmentation
-→ cleanup
-→ component analysis
-→ aircraft endpoint association
-→ skeletonization
-→ pruning
-→ ordered polyline
-```
-
-## Important rules
-
-- do not assume largest component;
-- detect clipping;
-- prefer deterministic geometry for direction;
-- reduce confidence during turns;
-- keep origin/destination inference conservative.
-
-## Done when
-
-Direction is consistently correct on representative route cases and route ambiguity is surfaced rather than hidden.
+These checks must be run together when Gemini quota is available. Unit tests with
+synthetic/local JSON do not establish that Gemini understands the map.
 
 ---
 
-# 12. Phase 8 — VLM Assistance & Evidence Fusion
+# 11. Phase 7 — VLM Assistance & Evidence Fusion (absorbed into Phase 6)
 
-## Objective
-
-Analyze the full Investigation core clip in the independent VLM branch and
-combine its source-specific observations with OCR and available map/route
-evidence through fusion, followed by cross-checking.
-
-## VLM branch
-
-The full clip provides temporal ticket, scroll and map/route context. Optional
-deterministic guidance includes boundaries, representative/stable-view timestamps
-and activity timing, explicitly labeled as supplied rather than model-observed.
-Preserve model/source identity, clip bounds, observed/interpreted values and
-available confidence; supporting times/ranges are recorded only when reliable.
-
-OCR and VLM can run concurrently. Neither requires the other's output, and
-failure/unavailability in one branch preserves evidence from the other. The MVP
-uses one full-Investigation Gemini API mode. Model and runtime optimization is
-deferred to Stage 11; it does not introduce hardware-based semantic tiers.
-
-## Fusion and cross-check
-
-Agreement, OCR-only and VLM-only evidence retain their sources. Incompatible
-readings remain explicit conflicts; no silent overwrite or blanket source
-priority resolves them. Preserve observation status, confidence type, temporal
-support and provenance. Distinguish changed dynamic values at different times
-from conflicting readings of the same field/time. Inference and enrichment never
-become OBSERVED merely through fusion.
-
-Cross-check fused evidence against the retained source streams and available
-deterministic/multi-view evidence. Report confirmed fields, suspected errors,
-conflicts and missed visible information. Shared guidance does not establish
-independent corroboration. Neither fusion nor cross-check rewrites Phase 1–5
-boundaries, stable views, representative selection or visual timing.
-
-## Runtime feasibility and completion
-
-The production MVP path is the configured Gemini API receiving the complete
-Investigation clip. Later Stage 11 work may measure fidelity, latency and runtime
-options, while preserving explicit branch availability and the full-clip contract.
-This phase is complete only when observations can be fused and cross-checked
-with agreement, conflicts, uncertainty and provenance preserved.
+Former Phase 8 is renumbered as Phase 7. Its VLM assistance, evidence fusion and
+cross-check responsibilities are now part of Phase 6.4–6.5. This roadmap entry
+does not start separate work or add a VLM call. Former Phase 7 route/direction
+analysis is also absorbed into Phase 6.
 
 ---
 
-# 13. Phase 9 — Tracked Aircraft Entity Matching
+# 12. Phase 8 — Tracked Aircraft Entity Matching
 
 ## Objective
 
@@ -979,7 +926,7 @@ Revisits are linked correctly without forcing uncertain matches.
 
 ---
 
-# 14. Phase 10 — Canonical Output & Renderers
+# 13. Phase 9 — Canonical Output & Renderers
 
 ## Objective
 
@@ -1041,10 +988,10 @@ A human reviewer can compare the generated outputs against the video and confirm
 
 ---
 
-# 15. Stage 11 — System Optimization & Improvement
+# 14. Phase 10 — System Optimization & Improvement
 
-Stage 11 is a dedicated post-MVP phase for improving the complete system using
-empirical evidence from end-to-end operation. It starts only after Stages 0–10
+Phase 10 is a dedicated post-MVP phase for improving the complete system using
+empirical evidence from end-to-end operation. It starts only after Phases 0–9
 are complete and the MVP has been validated. It is not a prerequisite for MVP
 completion, and it does not authorize premature optimization or generalization
 during MVP implementation.
@@ -1087,9 +1034,9 @@ The MVP VLM baseline is one complete continuous Investigation MP4 sent directly
 to the configured Google Gemini API with `fr24_vlm_v1`, followed by strict JSON
 parsing into source-specific observations. It is independent from OCR and receives
 no OCR values. Phase 6.4b integration and Phase 6.5 OCR/VLM fusion/cross-check are
-complete. Stage 11 may evaluate extraction quality, prompt/API behavior and latency.
+complete. Phase 10 may evaluate extraction quality, prompt/API behavior and latency.
 
-## 16. Planned Test Organization
+## 15. Planned Test Organization
 
 The repository may evolve toward:
 
@@ -1108,7 +1055,7 @@ Mocks belong under tests, including any mock VLM implementation.
 
 ---
 
-# 17. Current Repository Foundation
+# 16. Current Repository Foundation
 
 Current intended structure:
 

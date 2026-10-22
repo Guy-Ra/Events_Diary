@@ -203,3 +203,16 @@ def test_record_exposes_unresolved_and_not_available_field_views():
     assert isinstance(record.final_result, FinalInvestigationResult)
     assert record.unresolved_fields == ("TRACK",)
     assert record.not_available_fields == ("AGE",)
+
+
+def test_record_exposes_derived_track_directions_linked_to_original_ocr_occurrences():
+    values = _record(0, 0.0, 3.0, repeated_occurrence=True)
+    record = assemble_investigation_record(**values)
+    directions = record.derived_track_directions
+    assert [item.source_observation.raw_value_text for item in directions] == ["281°", "295°"]
+    assert [item.provenance for item in directions] == [
+        "deterministic_derived_from_ocr_track", "deterministic_derived_from_ocr_track",
+    ]
+    assert [item.status for item in record.track_direction_cross_checks] == [
+        "unavailable", "unavailable",
+    ]

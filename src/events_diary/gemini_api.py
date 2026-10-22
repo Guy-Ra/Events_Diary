@@ -18,7 +18,11 @@ from urllib.request import Request, urlopen
 
 from events_diary.config import VLMAPISettings
 from events_diary.vlm import ExecutionStatus, RawVLMResult, VLMRequest, VLMRuntime
-from events_diary.vlm_prompts import VLM_BOOLEAN_FIELDS, VLM_TEXT_FIELDS
+from events_diary.vlm_prompts import (
+    VLM_BOOLEAN_FIELDS,
+    VLM_ROUTE_FIELDS,
+    VLM_TEXT_FIELDS,
+)
 from events_diary.vlm_review import VLMReviewRequest
 
 GEMINI_API_KEY_ENV = "EVENTS_DIARY_VLM_API_KEY"
@@ -32,10 +36,25 @@ def _response_schema() -> dict[str, Any]:
         properties[name] = {"type": "STRING", "nullable": True}
     for name in VLM_BOOLEAN_FIELDS:
         properties[name] = {"type": "BOOLEAN", "nullable": True}
+    properties["visual_route"] = {
+        "type": "OBJECT",
+        "properties": {
+            name: {
+                "type": "OBJECT",
+                "properties": {
+                    "value": {"type": "STRING", "nullable": True},
+                    "status": {"type": "STRING", "enum": ["observed", "inferred", "not_visible"]},
+                },
+                "required": ["value", "status"],
+            }
+            for name in VLM_ROUTE_FIELDS
+        },
+        "required": list(VLM_ROUTE_FIELDS),
+    }
     return {
         "type": "OBJECT",
         "properties": properties,
-        "required": list(VLM_TEXT_FIELDS + VLM_BOOLEAN_FIELDS),
+        "required": list(VLM_TEXT_FIELDS + VLM_BOOLEAN_FIELDS) + ["visual_route"],
     }
 
 

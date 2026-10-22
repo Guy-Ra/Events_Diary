@@ -22,6 +22,10 @@ _TEXT_FIELDS = (
 _BOOLEAN_FIELDS = ("scroll_observed", "same_aircraft_throughout")
 VLM_TEXT_FIELDS = _TEXT_FIELDS
 VLM_BOOLEAN_FIELDS = _BOOLEAN_FIELDS
+VLM_ROUTE_FIELDS = (
+    "visual_flight_direction_sector", "visual_flight_direction_text",
+    "visual_route_description", "visual_departure_context",
+)
 
 
 def build_vlm_prompt(prompt_version: str = FR24_VLM_V1) -> str:
@@ -29,6 +33,8 @@ def build_vlm_prompt(prompt_version: str = FR24_VLM_V1) -> str:
     if prompt_version != FR24_VLM_V1:
         raise ValueError(f"Unsupported VLM prompt version: {prompt_version!r}.")
     schema = {**dict.fromkeys(_TEXT_FIELDS), **dict.fromkeys(_BOOLEAN_FIELDS)}
+    route_schema = {name: {"value": None, "status": "not_visible"} for name in VLM_ROUTE_FIELDS}
+    schema["visual_route"] = route_schema
     return f"""Watch the entire continuous video before answering. It contains one aircraft Investigation. The operator may scroll vertically through the same ticket. Information before and after scrolling belongs to the same Investigation unless the video clearly switches to another aircraft. Do not treat scrolling as an aircraft switch or copy values from another aircraft.
 
 The ticket panel is on the left of the full screen. Within the ticket, the upper section contains flight identifiers, aircraft code, airline name, route and times. Origin is on the left and destination is on the right; keep each side's airport, city, timezone and scheduled/actual/estimated times separate. Lower sections contain aircraft and technical information.
@@ -38,6 +44,8 @@ Some technical rows contain two independent side-by-side fields. Associate each 
 Use only visibly supported information. Do not use external aviation knowledge or infer a value from another field. Preserve visible text, numbers, units and codes. Do not normalize, repair or guess unreadable text.
 
 Return one compact JSON object and nothing else. Text fields must be strings or null; the final two fields must be booleans or null. Use null for unreadable, unknown or not-visible values. Use N/A only when literally shown as that field's value.
+
+Also analyze the visible map and selected aircraft trail. Keep these map-based claims separate from ticket fields: never use visual route analysis to fill or change origin_airport, origin_city, destination_airport, or destination_city. Do not infer departure context from flight identity, ticket values, or general aviation knowledge. For each visual route item below, return an object with `value` and `status`. Status is observed only when directly visible, inferred only when supported by the visible map/trail, and not_visible when unavailable (then value must be null). The direction sector must be one of N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW. Describe direction, historical trail, and departure/geographic context only as supported by the map.
 
 Required JSON shape (null values are placeholders, not suggested answers):
 {json.dumps(schema, separators=(",", ":"))}"""

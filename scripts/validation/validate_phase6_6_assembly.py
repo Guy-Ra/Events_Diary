@@ -61,6 +61,7 @@ from events_diary.vlm_parsing import parse_vlm_result
 from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
     REVIEW_FIELD_NAMES,
+    REVIEW_ROUTE_FIELDS,
     build_vlm_review_request,
     parse_vlm_review_result,
 )
@@ -409,6 +410,7 @@ def _run_one_investigation(
     _write_json(artifact_directory / "vlm_pass1_result.json", {
         "raw_result": pass1.raw_result,
         "observations": pass1.observations,
+        "visual_route": pass1.visual_route,
         "parse_diagnostics": pass1.parse_diagnostics,
         "provider": {
             "returned_model": p1diag.model_version,
@@ -425,6 +427,7 @@ def _run_one_investigation(
         and pass1.parse_diagnostics is not None
         and pass1.parse_diagnostics.status in ("valid_json", "recovered_markdown_fence")
         and len(pass1.observations) == len(REVIEW_FIELD_NAMES)
+        and pass1.visual_route is not None
     )
     if not p1_valid:
         return None, InvestigationFailure(
@@ -453,7 +456,7 @@ def _run_one_investigation(
             } for name, item in fusion.fields.items()
         },
     })
-    review_request = build_vlm_review_request(request, fusion)
+    review_request = build_vlm_review_request(request, fusion, pass1_result=pass1)
     review, p2diag, p2attempt, p2records, p2api, p2elapsed = _run_gemini(
         runtime, review_request, parse_vlm_review_result,
         investigation_id=investigation_id, pass_number=2,
@@ -461,6 +464,8 @@ def _run_one_investigation(
     _write_json(artifact_directory / "vlm_pass2_result.json", {
         "raw_result": review.raw_result,
         "reviewed_fields": review.reviewed_fields,
+        "route_reviews": review.route_reviews,
+        "direction_consistency": review.direction_consistency,
         "diagnostics": review.diagnostics,
         "provider": {
             "returned_model": p2diag.model_version,
@@ -472,7 +477,8 @@ def _run_one_investigation(
         },
     })
     if (review.raw_result.execution_status != "success"
-            or review.diagnostics or set(review.reviewed_fields) != set(REVIEW_FIELD_NAMES)):
+            or review.diagnostics or set(review.reviewed_fields) != set(REVIEW_FIELD_NAMES)
+            or set(review.route_reviews) != set(REVIEW_ROUTE_FIELDS)):
         return None, InvestigationFailure(
             investigation_id, source_video, interval.start_time_seconds, interval.end_time_seconds,
             "vlm_pass2_parse", "; ".join(review.diagnostics) or review.raw_result.error or "Incomplete Pass 2 fields.",
