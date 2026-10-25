@@ -54,14 +54,16 @@ from events_diary.investigation_record import (
 )
 from events_diary.ocr_fields import extract_ocr_fields_batch
 from events_diary.representative_selection import select_investigation_representatives
-from events_diary.ticket_ocr import run_ocr_for_representatives
+from events_diary.ticket_ocr import run_ocr_for_representatives, ticket_ocr_roi
 from events_diary.video import VideoMetadata
 from events_diary.vlm import VLMRequest
 from events_diary.vlm_parsing import parse_vlm_result
 from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
+    FR24_VLM_REVIEW_V3,
     REVIEW_FIELD_NAMES,
     REVIEW_ROUTE_FIELDS,
+    TicketDetailImage,
     build_vlm_review_request,
     parse_vlm_review_result,
 )
@@ -69,9 +71,10 @@ from scripts.evaluation.evaluate_ticket_stable_views import _build_contexts
 
 VIDEO = ROOT / "data/videos/investigation_switch_test.mp4"
 VIDEO_NAME = "investigation_switch"
-OUTPUT = ROOT / "data/debug/investigation_assembly/phase_6_6/latest_run"
+RUN_ID = time.strftime("v3_multi_%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000:06d}"
+OUTPUT = ROOT / "data/debug/investigation_assembly/phase_6_6" / RUN_ID
 EPSILON = 1e-9
-TRANSIENT_BACKOFF = {"503": (10, 30), "timeout": (10, 30), "429": (30, 60)}
+TRANSIENT_BACKOFF = {"503": (30, 90), "timeout": (30, 90), "429": (30, 60)}
 
 
 def _jsonable(value: Any) -> Any:
@@ -174,21 +177,141 @@ def _project_ocr_occurrences(occurrences):
     return selected
 
 
+def _make_ticket_detail_images(ocr_results, selection, resolver, ui_config, output):
+    """Create v3 ticket crops only from the existing Phase 5 OCR selections."""
+    selection_by_index = {item.candidate_index: item for item in selection.selections}
+    output.mkdir(parents=True, exist_ok=True)
+    image_records = []
+    seen_frames = set()
+    for item in ocr_results:
+        if item.frame_index in seen_frames:
+            continue
+        seen_frames.add(item.frame_index)
+        selected = selection_by_index[item.candidate_index]
+        role = "post_scroll_stable" if "post_scroll_stable" in selected.selection_reasons else "stable_ticket"
+        section = "lower scrolled ticket details" if role == "post_scroll_stable" else "upper ticket and flight identity"
+        frame = resolver.resolve(item.actual_timestamp_seconds)
+        if frame.frame_index != item.frame_index or frame.image is None:
+            raise RuntimeError("Decoded Pass 2 image frame disagrees with its selected representative.")
+        crop = ticket_ocr_roi(ui_config, frame.image.shape[1], frame.image.shape[0]).crop(frame.image)
+        crop = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        path = output / f"ticket_{role}_{item.frame_index:06d}_{item.actual_timestamp_seconds:.3f}s.png"
+        ok, encoded = cv2.imencode(".png", crop)
+        if not ok:
+            raise RuntimeError("Could not encode selected ticket detail crop.")
+        path.write_bytes(encoded.tobytes())
+        image_records.append(TicketDetailImage(
+            path, item.actual_timestamp_seconds, role, crop.shape[1], crop.shape[0], section,
+        ))
+    if not image_records:
+        raise RuntimeError("Phase 5 selection supplied no eligible ticket images for Pass 2 v3.")
+    return tuple(image_records)
+
+
+def _probe_provider(settings, artifact_path):
+    """Make and record exactly one minimal text-only provider availability request."""
+    runtime = GeminiAPIRuntime(settings)
+    payload = {
+        "contents": [{"parts": [{"text": "Reply with exactly OK."}]}],
+        "generationConfig": {"maxOutputTokens": 2},
+    }
+    started = time.perf_counter()
+    status, response_bytes, transport_error = runtime._post(payload, settings.api_key)
+    elapsed = time.perf_counter() - started
+    response = None
+    model_version = None
+    if response_bytes:
+        try:
+            response = json.loads(response_bytes.decode("utf-8", errors="replace"))
+            model_version = response.get("modelVersion")
+        except (json.JSONDecodeError, AttributeError):
+            response = {"body": response_bytes.decode("utf-8", errors="replace")[:2000]}
+    quota = _daily_quota_details(response)
+    result = {
+        "configured_model": settings.model_name,
+        "http_status": status,
+        "returned_model_version": model_version,
+        "request_duration_s": elapsed,
+        "transport_error": transport_error[0] if transport_error else None,
+        "provider_response": response,
+        "daily_quota_exhausted": bool(quota),
+        "quota_details": quota,
+    }
+    _write_json(artifact_path, result)
+    print("=== ONE PROVIDER AVAILABILITY PROBE ===", flush=True)
+    print(f"Configured model: {settings.model_name}", flush=True)
+    print(f"HTTP status: {status if status is not None else transport_error[0]}", flush=True)
+    print(f"Returned model version: {model_version or 'unavailable'}", flush=True)
+    print(f"Request duration: {elapsed:.3f}s", flush=True)
+    if quota:
+        print(f"Confirmed Free Tier daily quota exhaustion: {json.dumps(quota, ensure_ascii=False)}", flush=True)
+    return result
+
+
+def _daily_quota_details(response):
+    """Extract only explicit Free Tier daily request-quota details from an API body."""
+    if not isinstance(response, dict):
+        return None
+    error = response.get("error")
+    if not isinstance(error, dict):
+        return None
+    details = error.get("details")
+    candidates = details if isinstance(details, list) else []
+    quota_records = [item for item in candidates if isinstance(item, dict)]
+    serialized = json.dumps(response, ensure_ascii=False)
+    marker = "GenerateRequestsPerDayPerModel-FreeTier"
+    if marker not in serialized:
+        return None
+    result = {"quota_metric": marker}
+    for item in quota_records:
+        for key in ("quotaMetric", "quotaId", "quotaValue", "retryDelay"):
+            value = item.get(key)
+            if value is not None and key not in result:
+                result[key] = value
+        for violation in item.get("violations", []):
+            if not isinstance(violation, dict):
+                continue
+            for key in ("quotaMetric", "quotaId", "quotaValue"):
+                value = violation.get(key)
+                if value is not None and key not in result:
+                    result[key] = value
+            if "retryDelay" not in result:
+                delay = violation.get("retryDelay")
+                if delay is not None:
+                    result["retryDelay"] = delay
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("quotaMetric", "quotaId", "quotaValue", "retryDelay"):
+                value = metadata.get(key)
+                if value is not None and key not in result:
+                    result[key] = value
+    return result
+
+
 def _run_gemini(runtime, request, parser, *, investigation_id, pass_number):
     """Run one labeled Gemini pass with the Phase 6.6 transient retry schedule."""
     started = time.perf_counter()
     attempt_records = []
     execution = None
     successful_attempt = None
+    quota_exhaustion = None
     for attempt in range(1, 4):
         print(
-            f"\nInvestigation: {investigation_id}\nPass: {pass_number}\nAttempt: {attempt}/3",
+            f"\nInvestigation: {investigation_id}\nPass: {pass_number}\n"
+            f"Model: {runtime.model_name}\nAttempt: {attempt}/3",
             flush=True,
         )
         execution = runtime.run_with_diagnostics(request)
         raw = execution.raw_result
         elapsed = execution.diagnostics.elapsed_s
         returned_model = execution.diagnostics.model_version
+        provider_body = None
+        if execution.diagnostics.provider_response_json:
+            try:
+                provider_body = json.loads(execution.diagnostics.provider_response_json)
+            except json.JSONDecodeError:
+                provider_body = None
+        quota_details = _daily_quota_details(provider_body)
         if raw.execution_status == "success":
             failure_type = None
             status = "success"
@@ -205,19 +328,39 @@ def _run_gemini(runtime, request, parser, *, investigation_id, pass_number):
         else:
             failure_type = "other"
             status = "other"
-        waits = TRANSIENT_BACKOFF.get(failure_type, ())
+        daily_quota = bool(quota_details) and runtime.model_name == "gemini-3.6-flash"
+        if quota_details and runtime.model_name == "gemini-3.8-flash":
+            daily_quota = True
+        if daily_quota:
+            quota_exhaustion = {
+                "model": runtime.model_name,
+                "quota_metric": quota_details.get("quota_metric"),
+                "quota_id": quota_details.get("quotaId"),
+                "quota_value": quota_details.get("quotaValue"),
+                "retry_delay": quota_details.get("retryDelay"),
+            }
+        waits = () if daily_quota else TRANSIENT_BACKOFF.get(failure_type, ())
         backoff_s = waits[attempt - 1] if attempt < 3 and waits else 0
         attempt_records.append({
             "attempt": attempt,
             "status": status,
+            "http_result": 200 if status == "success" else status,
             "failure_type": failure_type,
             "elapsed_api_s": elapsed,
             "backoff_s": backoff_s,
             "returned_model_version": returned_model,
             "error": raw.error,
             "provider_retry_after_exposed": False,
+            "model": runtime.model_name,
+            "quota_exhaustion": quota_exhaustion,
         })
-        print(f"Status: {status}\nRequest elapsed: {elapsed:.3f}s", flush=True)
+        http_result = 200 if status == "success" else status
+        print(
+            f"Model: {runtime.model_name}\nHTTP/result: {http_result}\n"
+            f"Request elapsed: {elapsed:.3f}s", flush=True,
+        )
+        if quota_exhaustion:
+            print(f"Daily quota details: {json.dumps(quota_exhaustion, ensure_ascii=False)}", flush=True)
         print(f"Backoff before next attempt: {backoff_s}s", flush=True)
         print(f"Returned model version: {returned_model or 'unavailable'}", flush=True)
         if status == "success" or not waits or attempt == 3:
@@ -231,7 +374,7 @@ def _run_gemini(runtime, request, parser, *, investigation_id, pass_number):
     print(f"Pass {pass_number} total elapsed including backoff: {total_elapsed_s:.3f}s", flush=True)
     return (
         parser(request, execution.raw_result), execution.diagnostics,
-        successful_attempt, attempt_records, total_api_s, total_elapsed_s,
+        successful_attempt, attempt_records, total_api_s, total_elapsed_s, quota_exhaustion,
     )
 
 
@@ -404,7 +547,7 @@ def _run_one_investigation(
     print(f"Time range: [{interval.start_time_seconds:.3f}, {interval.end_time_seconds:.3f})", flush=True)
     print(f"Duration: {interval.end_time_seconds-interval.start_time_seconds:.3f}s", flush=True)
     print(f"OCR representatives: {len(ocr_results)}; occurrences: {len(occurrences)}", flush=True)
-    pass1, p1diag, p1attempt, p1records, p1api, p1elapsed = _run_gemini(
+    pass1, p1diag, p1attempt, p1records, p1api, p1elapsed, p1quota = _run_gemini(
         runtime, request, parse_vlm_result, investigation_id=investigation_id, pass_number=1,
     )
     _write_json(artifact_directory / "vlm_pass1_result.json", {
@@ -420,6 +563,11 @@ def _run_one_investigation(
             "total_elapsed_s": p1elapsed,
         },
     })
+    if p1quota:
+        return None, InvestigationFailure(
+            investigation_id, source_video, interval.start_time_seconds, interval.end_time_seconds,
+            "provider_daily_quota", json.dumps(p1quota, ensure_ascii=False), artifact_directory,
+        ), None
     p1_counts = Counter(item.status for item in pass1.observations)
     print(f"VLM1 observed: {p1_counts['observed']}; unavailable: {p1_counts['unavailable']}; ambiguous: {p1_counts['ambiguous']}", flush=True)
     p1_valid = (
@@ -456,8 +604,22 @@ def _run_one_investigation(
             } for name, item in fusion.fields.items()
         },
     })
-    review_request = build_vlm_review_request(request, fusion, pass1_result=pass1)
-    review, p2diag, p2attempt, p2records, p2api, p2elapsed = _run_gemini(
+    ticket_images = _make_ticket_detail_images(
+        ocr_results, selection, resolver, ui_config, artifact_directory / "ticket_images",
+    )
+    review_request = build_vlm_review_request(
+        request, fusion, pass1_result=pass1, ticket_images=ticket_images,
+        prompt_version=FR24_VLM_REVIEW_V3,
+    )
+    print(f"\nINVESTIGATION {investigation_id}", flush=True)
+    print("Full video: yes", flush=True)
+    print(f"Ticket images: {len(ticket_images)}", flush=True)
+    for image in ticket_images:
+        print(
+            f"  source={image.source_timestamp_s:.3f}s; role={image.role}; "
+            f"dimensions={image.width}x{image.height}; section={image.section}", flush=True,
+        )
+    review, p2diag, p2attempt, p2records, p2api, p2elapsed, p2quota = _run_gemini(
         runtime, review_request, parse_vlm_review_result,
         investigation_id=investigation_id, pass_number=2,
     )
@@ -474,14 +636,20 @@ def _run_one_investigation(
             "total_api_request_time_s": p2api,
             "total_elapsed_s": p2elapsed,
             "response_schema_used": p2diag.response_schema_used,
+            "quota_exhaustion": p2quota,
         },
+        "prompt_version": FR24_VLM_REVIEW_V3,
+        "ticket_images": ticket_images,
     })
     if (review.raw_result.execution_status != "success"
             or review.diagnostics or set(review.reviewed_fields) != set(REVIEW_FIELD_NAMES)
             or set(review.route_reviews) != set(REVIEW_ROUTE_FIELDS)):
         return None, InvestigationFailure(
             investigation_id, source_video, interval.start_time_seconds, interval.end_time_seconds,
-            "vlm_pass2_parse", "; ".join(review.diagnostics) or review.raw_result.error or "Incomplete Pass 2 fields.",
+            "provider_daily_quota" if p2quota else "vlm_pass2_parse",
+            json.dumps(p2quota, ensure_ascii=False) if p2quota else (
+                "; ".join(review.diagnostics) or review.raw_result.error or "Incomplete Pass 2 fields."
+            ),
             artifact_directory,
         ), None
     pass2_counts = Counter(item.review_status for item in review.reviewed_fields.values())
@@ -498,6 +666,30 @@ def _run_one_investigation(
         vlm_pass1=pass1, fusion_result=fusion, vlm_pass2=review, final_result=final,
     )
     _write_investigation_artifacts(artifact_directory, record)
+    # Assembly serialization writes the typed VLM result again; restore the
+    # request diagnostics so the final artifacts retain every provider attempt.
+    pass1_artifact = _read_json_if_present(artifact_directory / "vlm_pass1_result.json") or {}
+    pass1_artifact["provider"] = {
+        "returned_model": p1diag.model_version,
+        "successful_attempt": p1attempt,
+        "attempts": p1records,
+        "total_api_request_time_s": p1api,
+        "total_elapsed_s": p1elapsed,
+    }
+    _write_json(artifact_directory / "vlm_pass1_result.json", pass1_artifact)
+    pass2_artifact = _read_json_if_present(artifact_directory / "vlm_pass2_result.json") or {}
+    pass2_artifact["provider"] = {
+        "returned_model": p2diag.model_version,
+        "successful_attempt": p2attempt,
+        "attempts": p2records,
+        "total_api_request_time_s": p2api,
+        "total_elapsed_s": p2elapsed,
+        "response_schema_used": p2diag.response_schema_used,
+        "quota_exhaustion": p2quota,
+    }
+    pass2_artifact["prompt_version"] = FR24_VLM_REVIEW_V3
+    pass2_artifact["ticket_images"] = _jsonable(ticket_images)
+    _write_json(artifact_directory / "vlm_pass2_result.json", pass2_artifact)
     print(f"\n=== INVESTIGATION {investigation_id} COMPLETE ===", flush=True)
     print(f"Time range: [{record.start_time_s:.3f}, {record.end_time_s:.3f})s", flush=True)
     print(f"OCR: {'usable' if any(item.status == 'extracted' for item in occurrences) else 'non-usable'}", flush=True)
@@ -540,6 +732,39 @@ def _render_investigation(record) -> str:
     fusion_counts = record.fusion_result.summary
     p1_counts = Counter(item.status for item in record.vlm_pass1.observations)
     p2_counts = Counter(item.review_status for item in record.vlm_pass2.reviewed_fields.values())
+    ocr_by_field = defaultdict(list)
+    for item in record.ocr_field_occurrences:
+        ocr_by_field[item.canonical_label].append(item)
+    pass1_by_field = {item.field_name: item for item in record.vlm_pass1.observations}
+    important_fields = (
+        "primary_flight_id", "alternate_flight_id", "airline_name", "aircraft_code",
+        "AIRCRAFT_TYPE", "REGISTRATION", "SERIAL_NUMBER", "AGE", "origin_airport_code",
+        "destination_airport_code", "origin_scheduled_time", "origin_actual_time",
+        "destination_scheduled_time", "destination_estimated_or_actual_time", "TRACK",
+    )
+    field_rows = []
+    for name in important_fields:
+        final = record.final_fields.get(name)
+        fused = record.fusion_result.fields.get(name)
+        p1 = pass1_by_field.get(name)
+        p2 = record.vlm_pass2.reviewed_fields.get(name)
+        ocr_values = ocr_by_field.get(name, [])
+        field_rows.append((
+            name,
+            "; ".join(item.raw_value_text or "null" for item in ocr_values) or "null",
+            p1.raw_value if p1 else "null",
+            fused.status if fused else "unavailable",
+            p2.reviewed_value if p2 else "null",
+            p2.review_status if p2 else "unavailable",
+            p2.evidence_quality if p2 else "unavailable",
+            p2.evidence_time_s if p2 else "null",
+            p2.notes if p2 else "null",
+            final.final_status if final else "unavailable",
+            final.final_value if final else "null",
+        ))
+    visual_route = record.vlm_pass1.visual_route
+    route_reviews = record.vlm_pass2.route_reviews
+    direction_checks = record.track_direction_cross_checks
     lines = [
         f"\n=== INVESTIGATION {record.investigation_id} ===",
         f"Time range: [{record.start_time_s:.3f}, {record.end_time_s:.3f})s",
@@ -578,6 +803,44 @@ def _render_investigation(record) -> str:
         _table(("FIELD", "STATUS", "REVIEWED VALUE", "EVIDENCE QUALITY"), [
             (name, item.review_status, item.reviewed_value, item.evidence_quality)
             for name, item in record.vlm_pass2.reviewed_fields.items()
+        ]),
+        "IMPORTANT FIELD CROSS-STAGE REVIEW",
+        _table(("FIELD", "OCR", "VLM1", "FUSION", "PASS2 V3", "REVIEW", "QUALITY", "TIME", "NOTES", "FINAL STATUS", "FINAL VALUE"), field_rows),
+        "TRACK / DIRECTION PRESERVED EVIDENCE",
+        _table(("OCR TRACK", "PARSED DEGREES", "SECTOR", "FULL DIRECTION", "VLM VISUAL DIRECTION", "CONSISTENCY"), [
+            (
+                direction.source_observation.raw_value_text,
+                direction.degrees,
+                direction.sector,
+                direction.text,
+                visual_route.direction_text.value if visual_route else None,
+                check.status,
+            )
+            for direction, check in zip(
+                record.derived_track_directions,
+                direction_checks,
+                strict=True,
+            )
+        ] or [(None, None, None, None, visual_route.direction_text.value if visual_route else None, "unavailable")]),
+        "ROUTE CLAIMS (Pass 1) AND INDEPENDENT Pass 2 REVIEW",
+        _table(("FIELD", "PASS1 VALUE", "PASS1 STATUS", "PASS2 VALUE", "PASS2 OBSERVATION", "PASS2 REVIEW", "QUALITY", "TIME", "NOTES"), [
+            (
+                name,
+                getattr(visual_route, attr).value if visual_route else None,
+                getattr(visual_route, attr).status if visual_route else "not_visible",
+                route_reviews[name].reviewed_value if name in route_reviews else None,
+                route_reviews[name].observation_status if name in route_reviews else "not_visible",
+                route_reviews[name].review_status if name in route_reviews else "not_visible",
+                route_reviews[name].evidence_quality if name in route_reviews else "not_visible",
+                route_reviews[name].evidence_time_s if name in route_reviews else None,
+                route_reviews[name].notes if name in route_reviews else None,
+            )
+            for name, attr in (
+                ("visual_flight_direction_sector", "direction_sector"),
+                ("visual_flight_direction_text", "direction_text"),
+                ("visual_route_description", "route_description"),
+                ("visual_departure_context", "departure_context"),
+            )
         ]),
     ]
     return "\n".join(lines)
@@ -631,7 +894,8 @@ def _render_attempts(stage_name: str, payload) -> list[str]:
     lines = [f"{stage_name} attempts:"]
     for attempt in provider.get("attempts", []):
         lines.append(
-            f"  Attempt {attempt.get('attempt')}/3: status={attempt.get('status')}; "
+            f"  Attempt {attempt.get('attempt')}/3: model={attempt.get('model')}; "
+            f"HTTP/result={attempt.get('http_result', attempt.get('status'))}; "
             f"request_elapsed={attempt.get('elapsed_api_s')}; backoff={attempt.get('backoff_s')}s; "
             f"returned_model={attempt.get('returned_model_version') or 'unavailable'}; "
             f"error={attempt.get('error') or 'none'}"
@@ -662,9 +926,12 @@ def _render_failed_investigation(interval, failure, directory: Path) -> str:
         )
         lines.append("OCR FIELD OCCURRENCES")
         lines.append(_table(("FIELD", "STATUS", "VALUE", "SOURCE TIME"), [
-            (item.get("label_match", {}).get("canonical_label"), item.get("status"),
-             item.get("selected_candidate", {}).get("observation", {}).get("detection", {}).get("text"),
-             item.get("provenance", {}).get("actual_timestamp_seconds"))
+            (
+                (item.get("label_match") or {}).get("canonical_label"),
+                item.get("status"),
+                (((item.get("selected_candidate") or {}).get("observation") or {}).get("detection") or {}).get("text"),
+                (item.get("provenance") or {}).get("actual_timestamp_seconds"),
+            )
             for item in occurrences
         ]))
     else:
@@ -677,6 +944,22 @@ def _render_failed_investigation(interval, failure, directory: Path) -> str:
             f"VLM1: execution={raw.get('execution_status')}; observed={counts['observed']}; "
             f"unavailable={counts['unavailable']}; ambiguous={counts['ambiguous']}; error={raw.get('error')}"
         )
+        lines.append("VLM1 FIELD OBSERVATIONS")
+        lines.append(_table(("FIELD", "STATUS", "RAW VALUE", "EVIDENCE TIME"), [
+            (item.get("field_name"), item.get("status"), item.get("raw_value"), item.get("evidence_time_s"))
+            for item in observations
+        ]))
+        route = pass1.get("visual_route") or {}
+        lines.append("VLM1 VISUAL ROUTE")
+        lines.append(_table(("FIELD", "VALUE", "OBSERVATION STATUS"), [
+            (name, (route.get(key) or {}).get("value"), (route.get(key) or {}).get("status"))
+            for name, key in (
+                ("visual_flight_direction_sector", "direction_sector"),
+                ("visual_flight_direction_text", "direction_text"),
+                ("visual_route_description", "route_description"),
+                ("visual_departure_context", "departure_context"),
+            )
+        ]))
     else:
         lines.append("VLM1: not reached")
     lines.extend(_render_attempts("VLM Pass 1", pass1))
@@ -698,6 +981,22 @@ def _render_failed_investigation(interval, failure, directory: Path) -> str:
             f"corrected={counts['corrected']}; unresolved={counts['unresolved']}; "
             f"not_visible={counts['not_visible']}; error={raw.get('error')}"
         )
+        images = pass2.get("ticket_images", [])
+        lines.append(f"Pass 2 v3 ticket images: {len(images)}")
+        lines.append(_table(("SOURCE TIME", "ROLE", "DIMENSIONS", "SECTION"), [
+            (image.get("source_timestamp_s"), image.get("role"),
+             f"{image.get('width')}x{image.get('height')}", image.get("section"))
+            for image in images
+        ]))
+        consistency = pass2.get("direction_consistency") or {}
+        derived = consistency.get("derived_direction") or {}
+        lines.append(
+            "Direction comparison retained with request: "
+            f"OCR TRACK={((((derived.get('source_observation') or {}).get('selected_candidate') or {}).get('observation') or {}).get('detection') or {}).get('text')}; "
+            f"derived={derived.get('degrees')}° {derived.get('sector')} ({derived.get('text')}); "
+            f"visual={consistency.get('visual_direction_sector')} "
+            f"({consistency.get('visual_direction_status')}); comparison={consistency.get('status')}"
+        )
     else:
         lines.append("VLM2: not reached")
     lines.extend(_render_attempts("VLM Pass 2", pass2))
@@ -715,12 +1014,28 @@ def main() -> int:
     """Run multi-Investigation Phase 6.6 validation and persist complete artifacts."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    OUTPUT.mkdir(parents=True, exist_ok=True)
+    OUTPUT.mkdir(parents=True, exist_ok=False)
+    settings = load_vlm_api_settings()
+    if not settings.api_key_configured:
+        raise RuntimeError("Gemini API key is not configured.")
+    probe = _probe_provider(settings, OUTPUT / "provider_availability.json")
+    if probe["http_status"] == 429:
+        reason = "confirmed Free Tier daily quota exhaustion" if probe.get("daily_quota_exhausted") else "HTTP 429"
+        print(f"STOP: provider availability probe returned {reason}; no further provider calls will be made.", flush=True)
+        if probe.get("daily_quota_exhausted") and settings.model_name == "gemini-3.6-flash":
+            print("Required fallback: set EVENTS_DIARY_VLM_MODEL=gemini-3.8-flash locally, probe 3.8 once, then restart the full validation.", flush=True)
+        _write_json(OUTPUT / "phase_status.json", {
+            "phase": "6.6 v3 multi-Investigation regression", "status": "OPEN",
+            "stop_reason": reason,
+            "daily_quota_exhausted": probe.get("daily_quota_exhausted", False),
+            "quota_details": probe.get("quota_details"),
+            "model": settings.model_name,
+        })
+        return 3
     metadata, anomalies, contexts, phase3 = _build_contexts(VIDEO_NAME, include_phase3=True)
     if metadata.path.resolve() != VIDEO.resolve():
         raise RuntimeError("Detected video metadata does not match the configured input.")
     intervals = tuple(phase3["intervals"])
-    settings = load_vlm_api_settings()
     print("=== PHASE 6.6 VALIDATION ===", flush=True)
     print(f"Source video: {metadata.path}", flush=True)
     print(f"Detected Investigations: {len(intervals)}", flush=True)
@@ -794,6 +1109,11 @@ def main() -> int:
                 else:
                     failure_by_id[interval.investigation_index] = failure
                     print(f"Investigation {interval.investigation_index} FAILED at {failure.failed_stage}: {failure.reason}", flush=True)
+                    if failure.failed_stage == "provider_daily_quota":
+                        print("STOP: confirmed daily quota exhaustion; no later Investigation will be processed.", flush=True)
+                        if settings.model_name == "gemini-3.6-flash":
+                            print("Use gemini-3.8-flash for a fresh full validation only after one successful 3.8 availability probe.", flush=True)
+                    break
 
     session = VideoInvestigationResult(
         VIDEO, metadata,
@@ -842,7 +1162,7 @@ def main() -> int:
 
     session_payload = {
         "source_video": str(VIDEO), "video_metadata": metadata,
-        "investigation_count": session.investigation_count,
+        "investigation_count": len(intervals),
         "completed_records": [
             {
                 "investigation_id": record.investigation_id,
@@ -898,7 +1218,7 @@ def main() -> int:
             interval, failure, OUTPUT / f"investigation_{failure.investigation_id:03}"
         ))
     report.append("\n=== VIDEO / SESSION SUMMARY ===")
-    report.extend((f"Source video: {VIDEO}", f"Number of Investigations: {session.investigation_count}"))
+    report.extend((f"Source video: {VIDEO}", f"Number of Investigations: {len(intervals)}"))
     report.append(_table(
         ("ID", "START", "END", "FLIGHT ID", "REGISTRATION", "RESOLVED", "UNRESOLVED", "STATUS"),
         _summary_rows(session, intervals),
@@ -920,12 +1240,18 @@ def main() -> int:
     report_path.write_text("\n".join(report) + "\n", encoding="utf-8")
     print("\n" + "\n".join(summary_lines), flush=True)
     print("\n=== VIDEO INVESTIGATION SUMMARY ===", flush=True)
-    print(f"Source video: {VIDEO}\nNumber of Investigations: {session.investigation_count}", flush=True)
+    print(f"Source video: {VIDEO}\nNumber of Investigations: {len(intervals)}", flush=True)
     print(_table(("ID", "START", "END", "FLIGHT ID", "REGISTRATION", "RESOLVED", "UNRESOLVED", "STATUS"),
                  _summary_rows(session, intervals)), flush=True)
     print(f"Full report: {report_path}", flush=True)
     success = len(session.investigations) >= 2
-    phase_complete = success and not session.failures and all(isolation.values())
+    count_checks_pass = (
+        isolation["detected_investigation_count"] >= 2
+        and isolation["completed_record_count"] >= 2
+        and isolation["failed_investigation_count"] == 0
+    )
+    boolean_checks_pass = all(value for value in isolation.values() if type(value) is bool)
+    phase_complete = success and not session.failures and count_checks_pass and boolean_checks_pass
     _write_json(OUTPUT / "phase_status.json", {
         "phase": "6.6",
         "status": "COMPLETE" if phase_complete else "OPEN",

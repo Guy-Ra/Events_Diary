@@ -159,8 +159,11 @@ Phase 6 Pass 1 analyzes both ticket content and the visible map / selected-aircr
 route in its existing full-video call. Visual direction sector/text, route
 description and departure context are separate VLM observations with observed,
 inferred or not_visible status. Map-derived departure context never fills or
-overwrites ticket origin or destination. Pass 2 reviews these claims in its
-existing full-video review call; no route-only call or Pass 3 is added.
+overwrites ticket origin or destination. Pass 2 v3 reviews the full Investigation
+video together with Phase 5-selected ticket crops and OCR, VLM Pass 1, and fusion
+context in one Gemini request. The video supports temporal, map/route, scrolling,
+movement and dynamic-field interpretation; crops support precise small-text
+ticket reading. No image-only request or Pass 3 is added.
 
 OCR TRACK remains the original degree observation. Events Diary derives a
 16-point compass direction deterministically and marks it as derived from OCR.
@@ -177,10 +180,13 @@ not unrestricted authority.
 
 ## 10. Runtime and Hardware Adaptation
 
-The MVP VLM configuration selects the Google Gemini API endpoint/model and
-request timeout. Hardware-specific model execution profiles, alternate runtimes
-and optimization are deferred to post-MVP Phase 10. The canonical output schema
-and core event semantics remain stable.
+The final validated MVP model was `gemini-3.6-flash`, used throughout the
+successful complete validation dataset. Request timeout was 900 seconds, with
+at most three attempts and 503/timeout backoff of 30 seconds then 90 seconds.
+`gemini-3.8-flash` was an optional fallback only for confirmed 3.6 Free Tier daily
+quota exhaustion and was not used in that dataset. Hardware-specific model
+execution profiles, alternate runtimes and optimization are deferred to post-MVP
+Phase 10. The canonical output schema and core event semantics remain stable.
 
 ## 11. Evidence, Provenance and Confidence
 
@@ -246,12 +252,24 @@ A larger labeled ground-truth dataset is required before production-readiness cl
 - Milestone C — Complete Investigation Understanding (Phase 6)
 - Milestone D — Complete MVP (Phases 7–9)
 
-Phase 6 includes OCR/VLM ticket and map observations, deterministic TRACK
-direction, ticket fusion, direction cross-checking, Pass 2 review, multi-
-Investigation assembly and closure validation. The former standalone route /
-direction phase is absorbed into Phase 6. The former Phase 8–11 roadmap entries
-are renumbered as Phases 7–10; Phase 10 is System Optimization & Improvement and
-starts only after Phases 0–9 and end-to-end MVP validation.
+Phase 6 — Complete Investigation Understanding — is COMPLETE for MVP purposes.
+It includes OCR extraction and spatial structure, structured ticket extraction,
+deterministic TRACK direction, Pass 1 ticket and map/route understanding,
+provenance-preserving fusion, temporal awareness, direction consistency, Pass 2
+v3 crop-assisted review, conservative resolution, multi-Investigation assembly
+and end-to-end validation. Phase 6.6 passed record isolation: multiple real
+Investigations completed the pipeline with crops scoped correctly and no evidence
+leakage. Phase 6.7 validated `ticket_scroll_test.mp4` and
+`investigation_switch_test.mp4`; Pass 2 v3 materially improved small-text reading,
+and the targeted ticket-scroll regression achieved 11/11 manually reviewed
+targets. This is representative validation, not a single overall accuracy score.
+
+An accepted MVP limitation is that occasional low-priority small-text errors may
+remain after crop-assisted review. One AGE value was visibly 6 years while Pass 2
+returned 4 years; this is deferred to Phase 10. The former standalone route /
+direction analysis remains absorbed into Phase 6. Roadmap status: Phase 6
+COMPLETE, Phase 7 NEXT, Phases 8–9 planned, and Phase 10 System Optimization &
+Improvement post-MVP.
 
 ## 16. Open Product Decisions
 
@@ -264,8 +282,8 @@ starts only after Phases 0–9 and end-to-end MVP validation.
 
 ## Appendix A. Current Project Status
 
-Phases 0–5 are complete. Phase 6 implementation scope is in progress. Existing
-Gemini integration and ticket fusion have been validated on real video. The
-approved Pass 1 map/route extension, route review in Pass 2, TRACK direction
-cross-check, Phase 6.6 provider validation and Phase 6.7 closure validation are
-pending Gemini quota. Synthetic tests do not establish provider visual accuracy.
+Phases 0–6 are complete. Phase 7 is next. Phase 10 is reserved for post-MVP
+optimization, including residual VLM small-text errors, low-priority field
+accuracy and AGE review, model comparison/upgrades, media-resolution and
+crop-selection improvements, prompt, latency/runtime, and provider/quota
+optimization.

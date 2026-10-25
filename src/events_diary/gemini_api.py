@@ -1,7 +1,7 @@
-"""Google Gemini GenerateContent adapter for continuous FR24 Investigation video.
+"""Google Gemini GenerateContent adapter for continuous FR24 Investigation review.
 
-This provider boundary sends one MP4 as Gemini inlineData plus the unchanged
-production prompt. Credentials are read only from the configured environment
+This provider boundary sends one complete MP4 and, for Pass 2 v3, selected ticket
+detail crops in the same Gemini GenerateContent request. Credentials are read only from the configured environment
 variable, never added to results or logs. The adapter returns raw generated text
 and provider diagnostics; semantic interpretation remains in ``vlm_parsing``.
 """
@@ -164,15 +164,29 @@ class GeminiAPIRuntime(VLMRuntime):
         self, request: VLMRequest | VLMReviewRequest, video_bytes: bytes,
         generation_config: dict[str, Any], *, include_schema: bool,
     ) -> dict[str, Any]:
-        """Build Gemini JSON with the entire video bytes and current production prompt."""
+        """Build one Gemini request with the complete video and optional selected ticket crops."""
         config = dict(generation_config)
         if include_schema:
             config["responseSchema"] = GEMINI_RESPONSE_SCHEMA
+        parts: list[dict[str, Any]] = [
+            {"inlineData": {"mimeType": "video/mp4", "data": base64.b64encode(video_bytes).decode("ascii")}},
+        ]
+        if isinstance(request, VLMReviewRequest):
+            for index, image in enumerate(request.ticket_images, start=1):
+                try:
+                    image_bytes = image.image_path.read_bytes()
+                except OSError as error:
+                    raise ValueError(f"Selected ticket detail image {index} could not be read.") from error
+                if not image_bytes:
+                    raise ValueError(f"Selected ticket detail image {index} is empty.")
+                parts.append({"text": (
+                    f"Ticket detail image {index}; source video time "
+                    f"{image.source_timestamp_s:.3f}s; role={image.role}; section={image.section}."
+                )})
+                parts.append({"inlineData": {"mimeType": "image/png", "data": base64.b64encode(image_bytes).decode("ascii")}})
+        parts.append({"text": request.prompt})
         return {
-            "contents": [{"parts": [
-                {"inlineData": {"mimeType": "video/mp4", "data": base64.b64encode(video_bytes).decode("ascii")}},
-                {"text": request.prompt},
-            ]}],
+            "contents": [{"parts": parts}],
             "generationConfig": config,
         }
 

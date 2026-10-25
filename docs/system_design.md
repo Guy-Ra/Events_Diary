@@ -896,17 +896,16 @@ states, and similarity can alias on large/repetitive shifts.
 Phase 5 hands downstream consumers reference-only selections with original
 candidate, stable-view and materialization provenance available externally.
 Coverage describes visual evidence roles, not extracted fields or proven semantic
-completeness. **Phase 6 implementation is in progress. Existing ticket fusion is
-complete; provider validation for approved map/route behavior remains pending.**
+completeness. **Phase 6 is complete for MVP purposes**, including real-provider
+validation of map/route behavior, multi-Investigation assembly and end-to-end
+closure.
 
 ---
 
 ## Phase 6 — Complete Investigation Understanding
 
-Status: IMPLEMENTATION SCOPE IN PROGRESS. Core OCR/VLM/fusion behavior is
-implemented. The approved deterministic direction and visual-route contracts are
-implemented locally. Real map/route VLM validation, Phase 6.6 provider validation,
-and Phase 6.7 closure remain PENDING while Gemini quota is unavailable.
+Status: COMPLETE. Phase 6 is the complete Investigation understanding pipeline,
+validated on representative real recordings and accepted for MVP purposes.
 
 ### Responsibility and subphases
 
@@ -919,9 +918,10 @@ cross-checking and structured Investigation output:
 - 6.4 One full-video VLM Pass 1 analyzing both ticket content and visible map /
   selected-aircraft route.
 - 6.5 Ticket fusion, temporal cross-check, deterministic TRACK direction,
-  direction consistency reporting, and the existing full-video Pass 2 review.
+  direction consistency reporting, and full-video Pass 2 v3 with selected ticket
+  crops and evidence/context in the same request.
 - 6.6 Multi-Investigation assembly.
-- 6.7 End-to-end Phase 6 validation and closure.
+- 6.7 End-to-end Phase 6 validation and closure (complete).
 
 ### Approved parallel analysis boundary
 
@@ -940,7 +940,7 @@ flowchart TD
     OO --> D[Deterministic TRACK-to-compass derivation]
     D --> X[Direction consistency comparison]
     VR --> X
-    F --> P2[Existing full-video Pass 2 review]
+    F --> P2[Full video + Phase 5 crops + OCR/VLM1/fusion context: Pass 2 v3]
     VR --> P2
     X --> P2
     P2 --> S[Structured Investigation output]
@@ -980,11 +980,14 @@ The VLM output is semantic text; this phase does not reconstruct route geometry.
 
 ### Pass 2 and direction cross-check
 
-The existing Pass 2 call receives the same complete video and a review context
-containing ticket evidence, separate Pass 1 route claims, deterministic TRACK
-direction and a consistency status. It reviews the four route claims in a
-separate response section. No additional route request or Pass 3 is introduced.
-Pass 2 review observations remain distinct from final resolution.
+Pass 2 v3 receives the full Investigation video, high-quality Phase 5-selected
+ticket crops, OCR evidence, VLM Pass 1 evidence, and fusion/context information
+in one Gemini request. The continuous video provides temporal context for map
+and route, scrolling, movement and dynamic fields. The crops support precise
+small ticket text, aircraft identity, registration, serial number, age, displayed
+times and other small alphanumeric fields. No image-only Gemini request or Pass
+3 exists. Pass 2 reviews the four route claims in a separate response section;
+its observations remain distinct from final resolution.
 
 A deterministic comparison reports consistent, inconsistent or unavailable by
 comparing compass sectors only. It retains the OCR TRACK observation, its derived
@@ -1006,27 +1009,38 @@ Any future clip extraction must preserve original-video time mapping. Determinis
 analysis context may package boundaries, representative timestamps, stable views,
 scroll timing and map/route activity without changing upstream model outputs.
 
-### Phase 6 validation status
+### Phase 6 validation and closure
 
-Synthetic/local tests validate the TRACK conversion, response contracts, status
-handling, provenance and consistency comparison. They do not validate Gemini's
-visual understanding. The following provider-dependent checks remain PENDING
-until quota is available:
+The final validated model was `gemini-3.6-flash`. The successful complete
+validation dataset used one model throughout. Request timeout was 900 seconds;
+the retry policy allowed at most three attempts, retrying 503 and timeout with
+30-second then 90-second backoff. `gemini-3.8-flash` was an optional fallback
+only for confirmed 3.6 Free Tier daily quota exhaustion and was not used in the
+successful complete dataset.
 
-- real Pass 1 visual map and route understanding;
-- real Pass 2 review of route and direction evidence;
-- real TRACK-derived versus VLM visual-direction comparison;
-- Phase 6.6 multi-Investigation provider validation;
-- Phase 6.7 end-to-end closure validation.
+Phase 6.6 detected multiple real Investigations, completed both through the full
+pipeline, assembled independent records, scoped crops to the correct
+Investigation, and passed record-isolation checks with no evidence leakage.
+Phase 6.7 validated `ticket_scroll_test.mp4` and
+`investigation_switch_test.mp4`. Pass 2 v3 materially improved small-text
+reading; the targeted ticket-scroll regression achieved 11/11 manually reviewed
+targets. Multi-Investigation regression completed structurally, manual review
+showed strong performance on primary operational fields, and final output stayed
+conservative where evidence was insufficient. This representative validation
+does not claim one overall accuracy score.
+
+Known limitation: occasional errors may remain in low-priority small-text ticket
+fields after crop-assisted Pass 2 review. In one Investigation, AGE was visibly 6
+years while Pass 2 returned 4 years. This is accepted for the MVP; AGE is not a
+primary operational field, and further improvement is deferred to Phase 10.
 
 ---
 
-## Phase 7 — VLM Assistance & Evidence Fusion (absorbed into Phase 6)
+## Historical roadmap mapping — former VLM assistance and route analysis
 
-Former Phase 8 is renumbered as Phase 7, and its assistance/fusion scope is
-fulfilled inside Phase 6.4–6.5. Former Phase 7 route/direction analysis is also
-absorbed into Phase 6. This is a roadmap mapping entry, not a separate phase
-start, and it adds no VLM call.
+VLM assistance and evidence fusion are implemented in Phase 6.4–6.5. The former
+standalone route/direction analysis is also absorbed into Phase 6. This mapping
+does not define an active phase and adds no VLM call.
 
 ## Phase 8 — Tracked Aircraft Entity Matching
 
@@ -1213,6 +1227,15 @@ complete. Its open backlog is evidence-led and may address model/prompt quality,
 OCR, fusion, temporal sampling, runtime performance, robustness, architecture,
 rendering and justified generalization. It does not authorize premature
 optimization or silent changes to evidence semantics.
+
+The backlog includes residual VLM small-text errors and low-priority field
+accuracy (including stricter review of fields such as AGE), model comparison or
+upgrades, media-resolution tuning, crop-selection improvements, prompt
+optimization, latency/runtime optimization, and provider/quota optimization.
+
+Roadmap status: Phase 6 COMPLETE, Phase 7 NEXT, Phases 8–9 planned, and Phase 10
+System Optimization & Improvement post-MVP. The former standalone route-analysis
+phase remains absorbed into Phase 6.
 
 ---
 

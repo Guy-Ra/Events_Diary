@@ -2,6 +2,7 @@
 
 import base64
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,10 +28,12 @@ from events_diary.vlm import (
 from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
     EVIDENCE_QUALITIES,
-    FR24_VLM_REVIEW_V1,
+    FR24_VLM_REVIEW_V2,
+    FR24_VLM_REVIEW_V3,
     HIGH_PRIORITY_STATUSES,
     REVIEW_FIELD_NAMES,
     REVIEW_STATUSES,
+    TicketDetailImage,
     VLMReviewObservation,
     build_vlm_review_context,
     build_vlm_review_prompt,
@@ -139,7 +142,12 @@ def review_request(fused=None):
     """Build one full-video review request from matching Pass 1 provenance."""
     generated_fused, pass1, _ = fusion_result()
     return build_vlm_review_request(
-        base_request(), fused or generated_fused, pass1_result=pass1
+        base_request(), fused or generated_fused, pass1_result=pass1,
+        prompt_version=FR24_VLM_REVIEW_V3,
+        ticket_images=(TicketDetailImage(
+            Path("data/debug/ticket-detail-test.png"), 16.2, "post_scroll_stable",
+            672, 1662, "lower ticket details",
+        ),),
     )
 
 
@@ -178,6 +186,8 @@ def review_payload(overrides=None):
             "reviewed_value": None,
             "review_status": "not_visible",
             "evidence_quality": "not_visible",
+            "evidence_time_s": None,
+            "notes": None,
             "observation_status": "not_visible",
         }
         for name in (
@@ -234,7 +244,11 @@ def test_agreement_is_present_at_normal_priority_with_source_values():
 def test_temporal_review_prompt_uses_ocr_time_and_does_not_invent_missing_time():
     request = review_request()
     assert "inspect around original-video time 16.2s" in request.prompt
-    assert "fr24_vlm_review_v1" == request.prompt_version
+    assert FR24_VLM_REVIEW_V3 == request.prompt_version
+    assert "FIRST inspect" in request.prompt
+    assert "NO CONTEXT-BASED GUESSING" in request.prompt
+    assert "supplied high-quality ticket-detail images first for exact text reading" in request.prompt
+    assert "complete continuous Investigation video first for temporal/map/dynamic information" in request.prompt
     assert "Inspect every field" in request.prompt
     from events_diary.vlm_review import VLMReviewContext, VLMReviewFieldContext
 
@@ -248,19 +262,72 @@ def test_temporal_review_prompt_uses_ocr_time_and_does_not_invent_missing_time()
     )
     no_time = VLMReviewContext(2, SOURCE, 12.0, 20.4, fields)
     prompt = build_vlm_review_prompt(no_time)
-    assert "No field-specific OCR timestamp was supplied." in prompt
+    assert "No field-specific source timestamp was supplied." in prompt
     assert "around original-video time 0s" not in prompt
     assert '"ocr_timestamp_s":null' in prompt
+    fields["TRACK"] = replace(fields["TRACK"], vlm_evidence_time_s=18.0)
+    with_vlm_time = VLMReviewContext(2, SOURCE, 12.0, 20.4, fields)
+    timed_prompt = build_vlm_review_prompt(with_vlm_time)
+    assert "VLM Pass 1 observation at 18s" in timed_prompt
+    assert "inspect at each supplied source time" in timed_prompt
 
 
 def test_prompt_is_full_review_and_does_not_trust_either_source():
     prompt = review_request().prompt
     assert "complete continuous Investigation video again" in prompt
-    assert "do not skip agreement fields" in prompt
-    assert "Do not assume OCR or VLM Pass 1 is correct" in prompt
-    assert "Treat both values only as hypotheses" in prompt
-    assert "Do not vote" in prompt
-    assert "blindly repeat prior values" in prompt
+    assert "FIRST inspect the relevant video evidence independently" in prompt
+    assert "ONLY AFTER that independent read" in prompt
+    assert "Do not begin by asking whether a supplied candidate is correct" in prompt
+    assert "A candidate is not presumed truth" in prompt
+    assert "Do not vote among sources" in prompt
+
+
+def test_prompt_forbids_context_guessing_and_requires_abstention_when_unreadable():
+    prompt = review_request().prompt
+    for forbidden_basis in (
+        "flight identity", "airline", "route", "world knowledge",
+        "likely aircraft type", "prior knowledge of the flight",
+        "an OCR candidate", "a VLM Pass 1 candidate", "a fusion candidate",
+    ):
+        assert forbidden_basis in prompt
+    for sensitive_field in (
+        "registration", "serial number/MSN", "age", "aircraft type/code",
+        "scheduled/actual/estimated times",
+    ):
+        assert sensitive_field in prompt
+    assert "use unresolved" in prompt
+    assert "use not_visible" in prompt
+    assert "Do not force a value because a candidate exists" in prompt
+    assert "Candidate plausibility, source agreement, or a matching candidate alone never justifies clear" in prompt
+
+
+def test_prompt_re_reads_all_evidence_patterns_and_defines_review_statuses():
+    prompt = review_request().prompt
+    for pattern in (
+        "agreements", "conflicts", "ocr_only", "vlm_only", "unavailable",
+        "temporal_mismatch",
+    ):
+        assert pattern in prompt
+    for status in ("confirmed", "corrected", "unresolved", "not_visible"):
+        assert f"- {status}:" in prompt
+    assert "Independently reread even agreement fields" in prompt
+    assert "Do not implement majority voting" in prompt
+    assert "For OCR-only fields, independently inspect the video without favoring OCR" in prompt
+    assert "For VLM-only fields, independently inspect without favoring Pass 1" in prompt
+
+
+def test_prompt_re_reads_route_independently_and_respects_dynamic_time_context():
+    prompt = review_request().prompt
+    for route_field in (
+        "visual_flight_direction_sector", "visual_flight_direction_text",
+        "visual_route_description", "visual_departure_context",
+    ):
+        assert route_field in prompt
+    assert "independently inspect the map, aircraft position, trail" in prompt
+    assert "Do not infer a departure location from ticket origin, flight number, airline" in prompt
+    assert "without selecting either source as authoritative" in prompt
+    assert "use the relevant original-video time context" in prompt
+    assert "Values that differ at distinct times are not automatically contradictions" in prompt
 
 
 @pytest.mark.parametrize("status", REVIEW_STATUSES)
@@ -325,7 +392,7 @@ def test_parser_preserves_source_faithful_values_and_result_provenance():
     assert (result.source_start_s, result.source_end_s) == (12.0, 20.4)
     assert result.model_name == MODEL
     assert result.model_revision == REVISION
-    assert result.prompt_version == FR24_VLM_REVIEW_V1
+    assert result.prompt_version == FR24_VLM_REVIEW_V3
     assert set(result.route_reviews) == {
         "visual_flight_direction_sector", "visual_flight_direction_text",
         "visual_route_description", "visual_departure_context",
@@ -337,7 +404,13 @@ def test_pass2_review_context_keeps_route_and_track_cross_check_separate_from_ti
     assert request.context.visual_route.direction_sector.value == "ESE"
     assert request.context.direction_consistency.status == "inconsistent"
     assert request.context.direction_consistency.derived_direction.text == "West"
-    context_json = json.loads(request.prompt.split("Review context JSON:\n", 1)[1].split("\n\nReview the map", 1)[0])
+    context_json = json.loads(
+        request.prompt.split(
+            "Review context JSON (for comparison only, after the independent visual read):\n",
+            1,
+        )[1]
+        .split("\n\nReturn one JSON object", 1)[0]
+    )
     assert context_json["fields"]["origin_airport_code"]["ocr_raw_value"] is None
     assert context_json["visual_route"]["visual_departure_context"]["status"] == "not_visible"
     assert context_json["track_direction_cross_check"]["status"] == "inconsistent"
@@ -354,11 +427,117 @@ def test_pass2_parser_preserves_route_claim_statuses():
     item = result.route_reviews["visual_flight_direction_sector"]
     assert item.reviewed_value == "ESE"
     assert item.observation_status == "observed"
+    not_visible = result.route_reviews["visual_departure_context"]
+    assert not_visible.reviewed_value is None
+    assert not_visible.observation_status == "not_visible"
+    assert not_visible.evidence_time_s is None
+    assert not_visible.notes is None
     final = resolve_investigation(fusion_result()[0], result)
     assert final.direction_consistency.status == "inconsistent"
     assert final.direction_consistency.derived_direction.source_observation.raw_value_text == (
         "278" + chr(0x05B2) + chr(176)
     )
+
+
+def test_parser_accepts_prompt_shaped_route_reviews_and_inherits_confirmed_source_status():
+    request = review_request()
+    source_route = VLMVisualRouteObservation(
+        VLMVisualRouteClaim("NW", "inferred"),
+        VLMVisualRouteClaim("northwest", "inferred"),
+        VLMVisualRouteClaim(
+            "The aircraft is tracking northwest over the Mediterranean Sea.", "inferred"
+        ),
+        VLMVisualRouteClaim("The flight trail originates from Beirut.", "inferred"),
+        0, request.source_video, request.source_start_s, request.source_end_s,
+        MODEL, REVISION, "fr24_vlm_v1",
+    )
+    context = replace(request.context, visual_route=source_route)
+    request = replace(
+        request, context=context, prompt=build_vlm_review_prompt(context)
+    )
+    route_values = {
+        "visual_flight_direction_sector": (
+            "NW", "The flight vector on map points northwest towards Greece."
+        ),
+        "visual_flight_direction_text": (
+            "northwest", "Flight trajectory is visibly heading northwest."
+        ),
+        "visual_route_description": (
+            "The aircraft is tracking northwest over the Mediterranean Sea.",
+            "The map displays the flight line extending northwest off the coast of Lebanon over the Mediterranean Sea.",
+        ),
+        "visual_departure_context": (
+            "The flight trail originates from Beirut.",
+            "The flight line on map visually originates from Beirut airport.",
+        ),
+    }
+    payload = review_payload()
+    for name, (value, notes) in route_values.items():
+        # This matches the saved provider structure: the prompt-listed metadata
+        # is present, while observation_status is omitted.
+        payload["visual_route"][name] = {
+            "reviewed_value": value,
+            "review_status": "confirmed",
+            "evidence_quality": "clear",
+            "evidence_time_s": request.source_start_s,
+            "notes": notes,
+        }
+
+    result = parse_vlm_review_result(
+        request, raw_review_result(request, json.dumps(payload, ensure_ascii=False))
+    )
+
+    assert not result.diagnostics
+    assert len(result.reviewed_fields) == len(REVIEW_FIELD_NAMES)
+    assert set(result.route_reviews) == set(route_values)
+    for name, (value, notes) in route_values.items():
+        item = result.route_reviews[name]
+        assert item.reviewed_value == value
+        assert item.review_status == "confirmed"
+        assert item.evidence_quality == "clear"
+        assert item.evidence_time_s == request.source_start_s
+        assert item.notes == notes
+        assert item.observation_status == "inferred"
+
+
+def test_route_status_compatibility_does_not_accept_changed_value_without_status():
+    request = review_request()
+    payload = review_payload()
+    payload["visual_route"]["visual_flight_direction_sector"] = {
+        "reviewed_value": "NE",
+        "review_status": "corrected",
+        "evidence_quality": "clear",
+        "evidence_time_s": 13.0,
+        "notes": "A different direction is visible.",
+    }
+
+    result = parse_vlm_review_result(
+        request, raw_review_result(request, json.dumps(payload))
+    )
+
+    assert "visual_flight_direction_sector" not in result.route_reviews
+    assert "Invalid visual route review values: visual_flight_direction_sector." in result.diagnostics
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("review_status", "maybe"),
+        ("evidence_quality", "guess"),
+        ("observation_status", "derived"),
+    ],
+)
+def test_route_parser_rejects_unknown_review_enums(key, value):
+    request = review_request()
+    payload = review_payload()
+    payload["visual_route"]["visual_flight_direction_sector"][key] = value
+
+    result = parse_vlm_review_result(
+        request, raw_review_result(request, json.dumps(payload))
+    )
+
+    assert "visual_flight_direction_sector" not in result.route_reviews
+    assert "Invalid visual route review values: visual_flight_direction_sector." in result.diagnostics
 
 
 def test_parser_rejects_malformed_json_with_diagnostic():
@@ -393,7 +572,14 @@ def test_gemini_review_request_sends_full_video_and_json_mode_without_schema(tmp
     clip.write_bytes(video_bytes)
     base = base_request(video_clip_path=clip)
     fused, pass1, _ = fusion_result()
-    request = build_vlm_review_request(base, fused, pass1_result=pass1)
+    image_path = tmp_path / "ticket.png"
+    image_bytes = b"selected ticket crop png"
+    image_path.write_bytes(image_bytes)
+    image = TicketDetailImage(image_path, 16.2, "post_scroll_stable", 672, 1662, "lower ticket details")
+    request = build_vlm_review_request(
+        base, fused, pass1_result=pass1, ticket_images=(image,),
+        prompt_version=FR24_VLM_REVIEW_V3,
+    )
     captured = []
 
     class FakeResponse:
@@ -425,15 +611,36 @@ def test_gemini_review_request_sends_full_video_and_json_mode_without_schema(tmp
     parts = body["contents"][0]["parts"]
     media = [part for part in parts if "inlineData" in part]
     text_parts = [part["text"] for part in parts if "text" in part]
-    assert len(media) == 1
+    assert len(captured) == 1
+    assert len(media) == 2
     assert media[0]["inlineData"]["mimeType"] == "video/mp4"
     assert base64.b64decode(media[0]["inlineData"]["data"]) == video_bytes
-    assert text_parts == [request.prompt]
+    assert media[1]["inlineData"]["mimeType"] == "image/png"
+    assert base64.b64decode(media[1]["inlineData"]["data"]) == image_bytes
+    assert text_parts[0].startswith("Ticket detail image 1; source video time 16.200s")
+    assert text_parts[-1] == request.prompt
     assert body["generationConfig"] == {"responseMimeType": "application/json"}
     assert "responseSchema" not in body["generationConfig"]
     assert "maxOutputTokens" not in body["generationConfig"]
     assert "temperature" not in body["generationConfig"]
-    assert result.raw_result.prompt_version == FR24_VLM_REVIEW_V1
+    assert result.raw_result.prompt_version == FR24_VLM_REVIEW_V3
+
+
+def test_v2_prompt_version_keeps_independent_reread_without_v3_priority_rules():
+    request = review_request()
+    prompt = build_vlm_review_prompt(request.context, prompt_version=FR24_VLM_REVIEW_V2)
+    assert "FIRST inspect" in prompt
+    assert "NO CONTEXT-BASED GUESSING" in prompt
+    assert "Use ticket-detail images first for exact text reading" not in prompt
+
+
+def test_v3_request_requires_selected_ticket_detail_image():
+    fused, pass1, _ = fusion_result()
+    with pytest.raises(ValueError, match="requires at least one selected ticket detail image"):
+        build_vlm_review_request(
+            base_request(), fused, pass1_result=pass1,
+            prompt_version=FR24_VLM_REVIEW_V3,
+        )
 
 
 def test_gemini_adapter_imports_no_ocr_runtime_modules():

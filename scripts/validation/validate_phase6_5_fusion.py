@@ -17,7 +17,9 @@ are fabricated. Artifacts contain no API credentials.
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import sys
 import time
 from collections import Counter, defaultdict
@@ -44,14 +46,15 @@ from events_diary.fusion import (
 from events_diary.gemini_api import MAX_INLINE_VIDEO_BYTES, GeminiAPIRuntime
 from events_diary.ocr_fields import CANONICAL_LABELS, extract_ocr_fields_batch
 from events_diary.representative_selection import select_investigation_representatives
-from events_diary.ticket_ocr import run_ocr_for_representatives
+from events_diary.ticket_ocr import run_ocr_for_representatives, ticket_ocr_roi
 from events_diary.vlm import VLMRequest
 from events_diary.vlm_parsing import parse_vlm_result
 from events_diary.vlm_prompts import build_vlm_prompt
 from events_diary.vlm_review import (
-    FR24_VLM_REVIEW_V1,
+    FR24_VLM_REVIEW_V3,
     REVIEW_FIELD_NAMES,
     REVIEW_ROUTE_FIELDS,
+    TicketDetailImage,
     build_vlm_review_request,
     parse_vlm_review_result,
 )
@@ -59,10 +62,23 @@ from scripts.evaluation.evaluate_ticket_stable_views import _build_contexts
 
 VIDEO = ROOT / "data/videos/ticket_scroll_test.mp4"
 INVESTIGATION = 0
-START_S = 0.0
-END_S = 8.4
-RUN_DIR = ROOT / "data/debug/fusion/phase_6_5/latest_run"
+START_S = None
+END_S = None
+RUN_DIR = ROOT / "data/debug/fusion/phase_6_5" / f"v3_targeted_{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}"
 RETRY_WAITS = (5, 10)
+HUMAN_REVIEWED_TARGETS = {
+    "primary_flight_id": "ISR972",
+    "alternate_flight_id": "6H972",
+    "aircraft_code": "A332",
+    "AIRCRAFT_TYPE": "Airbus A330-243",
+    "REGISTRATION": "4X-BAL",
+    "SERIAL_NUMBER": "1100",
+    "AGE": "16 years",
+    "origin_scheduled_time": "2:30 PM",
+    "origin_actual_time": "4:49 PM",
+    "destination_scheduled_time": "8:45 AM",
+    "destination_estimated_or_actual_time": "9:31 AM",
+}
 
 
 def _json_write(path: Path, payload: object) -> None:
@@ -266,6 +282,40 @@ def _show_configuration(settings) -> str:
     return block
 
 
+def _provider_availability_probe(runtime, settings) -> dict[str, object]:
+    """Send one minimal configured-model request and stop on daily-quota HTTP 429."""
+    payload = {"contents": [{"parts": [{"text": "Reply with exactly OK."}]}]}
+    started = time.perf_counter()
+    status, response_bytes, transport_error = runtime._post(payload, settings.api_key)
+    elapsed = time.perf_counter() - started
+    model_version = None
+    generated_text = None
+    if status == 200:
+        try:
+            response = json.loads(response_bytes.decode("utf-8"))
+            model_version = response.get("modelVersion")
+            candidates = response.get("candidates", [])
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            generated_text = "".join(part.get("text", "") for part in parts)
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, IndexError, TypeError):
+            generated_text = None
+    safe_error = runtime._sanitize_provider_error(response_bytes, settings.api_key) if status != 200 and response_bytes else None
+    result = {
+        "configured_model": settings.model_name,
+        "http_status": status,
+        "elapsed_s": elapsed,
+        "returned_model_version": model_version,
+        "generated_text": generated_text,
+        "transport_error": transport_error[1] if transport_error else None,
+        "provider_error": safe_error,
+        "provider_requests": 1,
+    }
+    _json_write(RUN_DIR / "provider_availability_probe.json", result)
+    print("=== ONE-REQUEST PROVIDER AVAILABILITY PROBE ===")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return result
+
+
 def _inspect_pass2_request(runtime, request) -> dict[str, object]:
     """Persist and print safe structural metadata for the exact Pass 2 payload."""
     video_bytes = request.video_clip_path.read_bytes()
@@ -275,6 +325,7 @@ def _inspect_pass2_request(runtime, request) -> dict[str, object]:
     serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     parts = payload["contents"][0]["parts"]
     video_part = next(part["inlineData"] for part in parts if "inlineData" in part)
+    image_parts = [part["inlineData"] for part in parts if part.get("inlineData", {}).get("mimeType") == "image/png"]
     pass1_request = VLMRequest(
         investigation_index=request.investigation_index,
         source_video=request.source_video,
@@ -295,6 +346,20 @@ def _inspect_pass2_request(runtime, request) -> dict[str, object]:
         "endpoint_model": runtime.model_name,
         "endpoint_path": runtime.endpoint_url.split("?", 1)[0],
         "prompt_version": request.prompt_version,
+        "full_video_supplied": True,
+        "ticket_image_count": len(request.ticket_images),
+        "ticket_images": [
+            {
+                "reference": str(image.image_path),
+                "source_timestamp_s": image.source_timestamp_s,
+                "role": image.role,
+                "section": image.section,
+                "width": image.width,
+                "height": image.height,
+                "encoded_bytes": len(base64.b64decode(image_part["data"])),
+            }
+            for image, image_part in zip(request.ticket_images, image_parts, strict=True)
+        ],
         "video_mime_type": video_part["mimeType"],
         "video_byte_size": len(video_bytes),
         "prompt_character_count": len(request.prompt),
@@ -326,18 +391,30 @@ def _inspect_pass2_request(runtime, request) -> dict[str, object]:
     }
     _json_write(RUN_DIR / "pass2_request_summary.json", summary)
     print("=== PASS 2 REQUEST STRUCTURE ===")
+    print("PASS 2 V3 VISUAL INPUTS")
+    print("Full video: yes")
+    print(f"Ticket images: {len(request.ticket_images)}")
+    for image in request.ticket_images:
+        print(
+            f"- t={image.source_timestamp_s:.3f}s; role={image.role}; "
+            f"section={image.section}; dimensions={image.width}x{image.height}; "
+            f"file={image.image_path}"
+        )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return summary
 
 
 def _ocr_and_fusion_inputs():
     """Run existing Investigation selection, physical OCR, and canonical parsing."""
+    global START_S, END_S
     metadata, anomalies, contexts = _build_contexts("ticket_scroll")
     if anomalies:
         raise RuntimeError(f"Unexpected lifecycle anomalies: {anomalies}")
-    if metadata.path.resolve() != VIDEO.resolve() or metadata.duration_seconds != END_S:
-        raise RuntimeError("Video metadata does not match the requested complete Investigation.")
     window, plan, views, _ = next(item for item in contexts if item[0].investigation_index == INVESTIGATION)
+    START_S = window.investigation_start_time_seconds
+    END_S = window.investigation_end_time_seconds
+    if metadata.path.resolve() != VIDEO.resolve() or END_S > metadata.duration_seconds:
+        raise RuntimeError("Detected Investigation interval is outside the requested source video.")
     candidates = build_evidence_candidate_timeline(window=window, sampling_plan=plan, stable_views=views)
     config = UIConfig()
     with VideoFrameResolver(VIDEO, metadata=metadata) as resolver:
@@ -366,7 +443,44 @@ def _ocr_and_fusion_inputs():
         usable = [item for item in occurrences if item.status == "extracted" and item.raw_value_text is not None]
         pool = usable or occurrences
         selected_by_name[name] = max(pool, key=lambda item: (item.provenance.actual_timestamp_seconds, item.provenance.candidate_index))
-    return metadata, raw_results, flattened, by_name, selected_by_name
+    return metadata, raw_results, flattened, by_name, selected_by_name, selection
+
+
+def _make_ticket_detail_images(ocr_results, selection) -> tuple[TicketDetailImage, ...]:
+    """Crop only production-selected OCR representatives at their original source times."""
+    import cv2
+
+    selection_by_index = {item.candidate_index: item for item in selection.selections}
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    output = RUN_DIR / "ticket_images"
+    output.mkdir(parents=True, exist_ok=True)
+    image_records = []
+    seen_frames = set()
+    with VideoFrameResolver(VIDEO) as resolver:
+        for item in ocr_results:
+            if item.frame_index in seen_frames:
+                continue
+            seen_frames.add(item.frame_index)
+            reasons = selection_by_index[item.candidate_index].selection_reasons
+            role = "post_scroll_stable" if "post_scroll_stable" in reasons else "stable_ticket"
+            section = "lower scrolled ticket details" if role == "post_scroll_stable" else "upper ticket and flight identity"
+            frame = resolver.resolve(item.actual_timestamp_seconds)
+            if frame.frame_index != item.frame_index or frame.image is None:
+                raise RuntimeError("Decoded Pass 2 image frame disagrees with its selected representative.")
+            roi = ticket_ocr_roi(UIConfig(), frame.image.shape[1], frame.image.shape[0])
+            crop = roi.crop(frame.image)
+            crop = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            path = output / f"ticket_{role}_{item.frame_index:06d}_{item.actual_timestamp_seconds:.3f}s.png"
+            ok, encoded = cv2.imencode(".png", crop)
+            if not ok:
+                raise RuntimeError("Could not encode selected ticket detail crop.")
+            path.write_bytes(encoded.tobytes())
+            image_records.append(TicketDetailImage(
+                path, item.actual_timestamp_seconds, role, crop.shape[1], crop.shape[0], section,
+            ))
+    if not image_records:
+        raise RuntimeError("Phase 5/6 production selection supplied no eligible ticket images.")
+    return tuple(image_records)
 
 
 def _ocr_table(by_name):
@@ -449,6 +563,135 @@ def _final_table(result):
     return rows
 
 
+def _normalized_target_value(value: object, *, time_field: bool = False) -> str | None:
+    """Normalize only for post-run human scoring, never for model input or production."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if time_field:
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})(?:\s*([ap])\.?m\.?)?", text)
+        if match:
+            hour, minute = int(match.group(1)), int(match.group(2))
+            suffix = match.group(3)
+            if suffix:
+                hour = hour % 12 + (12 if suffix == "p" else 0)
+            if hour < 24 and minute < 60:
+                return f"{hour:02d}:{minute:02d}"
+    return "".join(char for char in text if char.isalnum())
+
+
+def _target_regression(pass2, fused, pass1, final):
+    """Compare Pass 2 and final outputs to held-out manual values after the call."""
+    rows = []
+    classes = Counter()
+    time_names = {
+        "origin_scheduled_time", "origin_actual_time", "destination_scheduled_time",
+        "destination_estimated_or_actual_time",
+    }
+    for name, expected in HUMAN_REVIEWED_TARGETS.items():
+        cross = fused.fields[name]
+        p2 = pass2.reviewed_fields.get(name)
+        p1_item = pass1.get(name)
+        resolved = final.fields[name]
+        actual = p2.reviewed_value if p2 else None
+        exact = actual == expected
+        normalized = _normalized_target_value(actual, time_field=name in time_names) == _normalized_target_value(expected, time_field=name in time_names)
+        if p2 and p2.review_status in ("confirmed", "corrected"):
+            if normalized:
+                quality = "CORRECTLY_CONFIRMED" if p2.review_status == "confirmed" else "CORRECTLY_CORRECTED"
+            else:
+                quality = "INCORRECTLY_CONFIRMED" if p2.review_status == "confirmed" else "INCORRECTLY_CORRECTED"
+        elif actual is None and p2 and p2.review_status in ("unresolved", "not_visible"):
+            quality = "CORRECTLY_UNRESOLVED"
+        else:
+            quality = "CANNOT_VERIFY"
+        classes[quality] += 1
+        rows.append({
+            "field": name,
+            "human_expected": expected,
+            "ocr": cross.ocr_observation.raw_value_text if cross.ocr_observation else None,
+            "vlm_pass1": p1_item.raw_value if p1_item else None,
+            "fusion_status": cross.status,
+            "pass2_v3_value": actual,
+            "review_status": p2.review_status if p2 else None,
+            "evidence_quality": p2.evidence_quality if p2 else None,
+            "evidence_time_s": p2.evidence_time_s if p2 else None,
+            "notes": p2.notes if p2 else None,
+            "final_status": resolved.final_status,
+            "final_value": resolved.final_value,
+            "exact_match": exact,
+            "normalized_match": normalized,
+            "quality": quality,
+        })
+    return rows, dict(classes)
+
+
+def _save_v3_targeted_report(rows, classes, provider_requests):
+    """Persist the held-out field comparison and targeted v2-to-v3 decision."""
+    columns = (
+        "field", "human_expected", "ocr", "vlm_pass1", "fusion_status", "pass2_v3_value",
+        "review_status", "evidence_quality", "evidence_time_s", "notes", "final_status", "final_value",
+    )
+    table = _table(columns, [tuple(row[column] for column in columns) for row in rows])
+    previous = {
+        "CORRECTLY_CONFIRMED": 3, "CORRECTLY_CORRECTED": 0, "CORRECTLY_UNRESOLVED": 0,
+        "INCORRECTLY_CONFIRMED": 7, "INCORRECTLY_CORRECTED": 1, "CANNOT_VERIFY": 0,
+    }
+    v3_incorrect = classes.get("INCORRECTLY_CONFIRMED", 0) + classes.get("INCORRECTLY_CORRECTED", 0)
+    v2_incorrect = previous["INCORRECTLY_CONFIRMED"] + previous["INCORRECTLY_CORRECTED"]
+    v3_supported = sum(classes.get(key, 0) for key in (
+        "CORRECTLY_CONFIRMED", "CORRECTLY_CORRECTED", "CORRECTLY_UNRESOLVED",
+    ))
+    v2_supported = sum(previous[key] for key in (
+        "CORRECTLY_CONFIRMED", "CORRECTLY_CORRECTED", "CORRECTLY_UNRESOLVED",
+    ))
+    exact_matches = sum(bool(row["exact_match"]) for row in rows)
+    normalized_matches = sum(bool(row["normalized_match"]) for row in rows)
+    misses_or_nulls = sum(row["pass2_v3_value"] is None for row in rows)
+    nonnull_mismatches = sum(
+        row["pass2_v3_value"] is not None and not row["normalized_match"] for row in rows
+    )
+    status = "PASS" if v3_incorrect < v2_incorrect and v3_supported > v2_supported else "FAIL"
+    report = [
+        f"PASS 2 V3 TARGETED REGRESSION = {status}",
+        "Video: data/videos/ticket_scroll_test.mp4",
+        f"Investigation: {INVESTIGATION}; source interval=[{START_S:.3f}, {END_S:.3f})",
+        "Prompt: fr24_vlm_review_v3; full video and selected ticket crops shared in one Pass 2 request.",
+        f"Provider requests (availability + Pass 1 + Pass 2 attempts): {provider_requests}",
+        "Held-out human-reviewed values were used only for post-run scoring, never model context.",
+        "",
+        "FIELD-BY-FIELD TARGET REGRESSION",
+        table,
+        "",
+        "QUALITY CLASSIFICATION",
+        json.dumps(classes, indent=2, ensure_ascii=False),
+        f"Exact matches: {exact_matches}; normalized matches: {normalized_matches}; misses/nulls: {misses_or_nulls}; non-null mismatches: {nonnull_mismatches}.",
+        "",
+        "V2 BASELINE",
+        json.dumps(previous, indent=2),
+        "",
+        f"Targeted decision: {status}",
+        "Phase 6 remains OPEN. Multi-Investigation regression and Phase 6.7 were not run.",
+    ]
+    (RUN_DIR / "v3_targeted_regression.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+    _json_write(RUN_DIR / "v3_targeted_status.json", {
+        "targeted_regression": status,
+        "quality_counts": classes,
+        "exact_matches": exact_matches,
+        "normalized_matches": normalized_matches,
+        "misses_or_nulls": misses_or_nulls,
+        "nonnull_mismatches": nonnull_mismatches,
+        "v2_baseline": previous,
+        "field_results": rows,
+        "provider_requests": provider_requests,
+        "phase_6": "OPEN",
+        "multi_investigation_regression": "NOT RUN",
+        "phase_6_7": "NOT RUN",
+        "phase_7_started": False,
+    })
+    print("\n" + "\n".join(report))
+
+
 def _effect(item):
     """Describe the deterministic Pass 2 effect category for one final field."""
     status = item.fused_observation.status
@@ -523,7 +766,9 @@ def main() -> int:
     """Run the bounded real Investigation validation, stopping on either VLM failure."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    if RUN_DIR.exists():
+        raise FileExistsError(f"Refusing to overwrite prior Pass 2 v3 artifacts: {RUN_DIR}")
+    RUN_DIR.mkdir(parents=True)
     settings = load_vlm_api_settings()
     config_block = _show_configuration(settings)
     if not settings.api_key_configured:
@@ -534,8 +779,22 @@ def main() -> int:
     if video_size > MAX_INLINE_VIDEO_BYTES:
         raise RuntimeError("Complete Investigation video exceeds Gemini's inline-data size limit.")
 
+    runtime = GeminiAPIRuntime(settings)
+    availability = _provider_availability_probe(runtime, settings)
+    if availability["http_status"] != 200:
+        _json_write(RUN_DIR / "v3_targeted_status.json", {
+            "targeted_regression": "NOT RUN",
+            "stop_reason": "The single provider availability probe did not return HTTP 200.",
+            "provider_availability": availability,
+            "provider_requests": 1,
+            "phase_6": "OPEN",
+            "phase_7_started": False,
+        })
+        print("Provider unavailable; targeted validation stopped before OCR/VLM pipeline calls.")
+        return 1
+
     start = time.perf_counter()
-    metadata, ocr_results, ocr_fields, ocr_by_name, chosen_ocr = _ocr_and_fusion_inputs()
+    metadata, ocr_results, ocr_fields, ocr_by_name, chosen_ocr, selection = _ocr_and_fusion_inputs()
     ocr_elapsed = time.perf_counter() - start
     ocr_rows, ocr_usable, ocr_unavailable = _ocr_table(ocr_by_name)
     print("\n=== OCR RESULT ===")
@@ -680,12 +939,18 @@ def main() -> int:
         },
     })
 
-    review_request = build_vlm_review_request(request, fusion_result, pass1_result=pass1)
+    ticket_images = _make_ticket_detail_images(ocr_results, selection)
+    review_request = build_vlm_review_request(
+        request, fusion_result, pass1_result=pass1, ticket_images=ticket_images,
+        prompt_version=FR24_VLM_REVIEW_V3,
+    )
     _json_write(RUN_DIR / "vlm_review_context.json", {
         "investigation_id": review_request.context.investigation_id,
         "source_video": str(review_request.context.source_video),
         "source_interval_s": [review_request.context.source_start_s, review_request.context.source_end_s],
         "prompt_version": review_request.prompt_version,
+        "full_video_supplied": True,
+        "ticket_images": [_jsonable(image) for image in review_request.ticket_images],
         "review_context": {
             name: _jsonable(item) | {"priority": item.priority}
             for name, item in review_request.context.fields.items()
@@ -695,7 +960,7 @@ def main() -> int:
     })
 
     print("\n=== VLM PASS 2 REVIEW ===")
-    print(f"Requested model: {settings.model_name}; prompt: {FR24_VLM_REVIEW_V1}")
+    print(f"Requested model: {settings.model_name}; prompt: {FR24_VLM_REVIEW_V3}")
     _inspect_pass2_request(runtime, review_request)
     pass2, p2diag, p2attempt, p2records, p2api_s, pass2_elapsed = _run_gemini(runtime, review_request, parse_vlm_review_result)
     safe_provider_response = (
@@ -863,6 +1128,11 @@ def main() -> int:
         return 1
 
     final = resolve_investigation(fusion_result, pass2)
+    target_rows, target_counts = _target_regression(
+        pass2, fusion_result, vlm_by_name, final,
+    )
+    provider_request_count = 1 + len(p1records) + len(p2records)
+    _save_v3_targeted_report(target_rows, target_counts, provider_request_count)
     final_rows = _final_table(final)
     _json_write(RUN_DIR / "final_result.json", {
         "investigation_id": final.investigation_id,
@@ -941,7 +1211,12 @@ def main() -> int:
     (RUN_DIR / "full_validation_report.txt").write_text(report_text, encoding="utf-8")
     (RUN_DIR / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     _json_write(RUN_DIR / "phase_status.json", {
-        "phase_status": "COMPLETE",
+        "targeted_run_status": "COMPLETE",
+        "targeted_regression": "see v3_targeted_status.json",
+        "phase_6": "OPEN",
+        "multi_investigation_regression": "NOT RUN",
+        "phase_6_7": "NOT RUN",
+        "phase_7_started": False,
         "video": str(VIDEO),
         "investigation_id": INVESTIGATION,
         "source_interval_s": [START_S, END_S],
@@ -957,7 +1232,7 @@ def main() -> int:
     print("\n".join(case_lines))
     print("\n" + "\n".join(summary_lines))
     print(f"\nFull report: {RUN_DIR / 'full_validation_report.txt'}")
-    print("Phase 6.5 validation run complete; policy and production code unchanged.")
+    print("Targeted Pass 2 v3 validation complete; stopped before multi-Investigation regression.")
     return 0
 
 

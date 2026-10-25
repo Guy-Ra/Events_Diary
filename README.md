@@ -26,16 +26,36 @@ provisional; stable views do not prove loading completeness. The complete-video
 Gemini VLM path and Phase 6.5 OCR/VLM fusion/cross-check are implemented and
 validated on real video.
 
-**Current: Phase 6 — Complete Investigation Understanding (implementation in
-progress).** The approved scope includes deterministic OCR TRACK-to-compass
-conversion, map/visible-route observations in the existing Pass 1 call, route
-review in the existing Pass 2 call, and a provenance-preserving direction
-cross-check. Real provider validation for these additions, Phase 6.6 and Phase
-6.7 remains pending Gemini quota. No extra VLM call is planned.
+**Phase 6 — Complete Investigation Understanding is COMPLETE for MVP purposes.**
+The validated pipeline includes OCR extraction and spatial structure, structured
+ticket extraction, deterministic TRACK-to-compass conversion, Pass 1 ticket and
+map/route observations, provenance-preserving fusion and temporal cross-checks,
+Pass 2 v3 crop-assisted review, conservative resolution, and isolated
+multi-Investigation assembly. Phase 6.6 and 6.7 real-video validation completed.
 
-The former standalone route/direction work is absorbed into Phase 6. The remaining
-roadmap is Phase 7 (absorbed former Phase 8 boundary), Phase 8 aircraft entity
-matching, Phase 9 canonical output, and Phase 10 post-MVP system optimization.
+Pass 2 v3 sends the full Investigation video, Phase 5-selected ticket crops,
+OCR evidence, VLM Pass 1 evidence and fusion/context information in one Gemini
+request. The video provides temporal and map/route context; crops support precise
+small-text ticket reading. No image-only request or Pass 3 exists. The final
+validated model was `gemini-3.6-flash` throughout the successful complete
+validation dataset. Timeout was 900 seconds with up to three attempts and
+503/timeout backoff of 30 seconds then 90 seconds. `gemini-3.8-flash` was an
+optional fallback only for confirmed 3.6 Free Tier daily quota exhaustion and
+was not used in that dataset.
+
+Validation used `ticket_scroll_test.mp4` and `investigation_switch_test.mp4`.
+The ticket-scroll targeted regression achieved 11/11 manually reviewed targets;
+the multi-Investigation regression completed structurally with record isolation
+and correctly scoped crops. Validation is representative rather than a benchmark
+and does not claim a single overall accuracy score.
+
+Known limitation: occasional low-priority small-text errors may remain after
+crop-assisted review. In one Investigation AGE was visibly 6 years while Pass 2
+returned 4 years. This is accepted for MVP and deferred to Phase 10.
+
+**Roadmap:** Phase 6 COMPLETE; Phase 7 NEXT; Phases 8–9 planned; Phase 10 System
+Optimization & Improvement is post-MVP. The former standalone route-analysis
+phase remains absorbed into Phase 6.
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,

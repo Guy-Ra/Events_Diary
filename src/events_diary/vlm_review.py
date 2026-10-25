@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from events_diary.fusion import FusedInvestigationResult
 
 FR24_VLM_REVIEW_V1 = "fr24_vlm_review_v1"
+FR24_VLM_REVIEW_V2 = "fr24_vlm_review_v2"
+FR24_VLM_REVIEW_V3 = "fr24_vlm_review_v3"
 REVIEW_STATUSES = ("confirmed", "corrected", "unresolved", "not_visible")
 EVIDENCE_QUALITIES = ("clear", "partial", "weak", "not_visible")
 HIGH_PRIORITY_STATUSES = frozenset({
@@ -275,30 +277,71 @@ def _context_payload(context: VLMReviewContext) -> dict[str, object]:
     }
 
 
-def build_vlm_review_prompt(context: VLMReviewContext) -> str:
-    """Build the dedicated full-video review prompt with explicit priority guidance."""
+def build_vlm_review_prompt(context: VLMReviewContext, *, prompt_version: str = FR24_VLM_REVIEW_V2) -> str:
+    """Build the independent-read-first prompt for full video and ticket detail images."""
     if not isinstance(context, VLMReviewContext):
         raise TypeError("context must be VLMReviewContext.")
     temporal_guidance = []
     for name, item in context.fields.items():
-        if item.fusion_status == "temporal_mismatch" and item.ocr_timestamp_s is not None:
+        if item.fusion_status != "temporal_mismatch":
+            continue
+        source_times = []
+        if item.ocr_timestamp_s is not None:
+            source_times.append(f"OCR observation at {item.ocr_timestamp_s:g}s")
+        if item.vlm_evidence_time_s is not None:
+            source_times.append(f"VLM Pass 1 observation at {item.vlm_evidence_time_s:g}s")
+        if source_times:
             temporal_guidance.append(
                 f"For {name}, inspect around original-video time "
                 f"{item.ocr_timestamp_s:g}s and report what is visible there."
+                if item.ocr_timestamp_s is not None and item.vlm_evidence_time_s is None
+                else f"For {name}, independently inspect at each supplied source time "
+                f"({'; '.join(source_times)}) and compare values only after reading each moment."
             )
-    timing = "\n".join(temporal_guidance) or "No field-specific OCR timestamp was supplied."
-    return f"""Review the complete continuous Investigation video again. Inspect every field in the supplied review context; do not skip agreement fields. HIGH priority fields are marked high and include conflicts, temporal mismatches, one-source values, and unavailable values. NORMAL priority agreement fields still require an independent visual review.
+    timing = "\n".join(temporal_guidance) or "No field-specific source timestamp was supplied."
+    if prompt_version not in (FR24_VLM_REVIEW_V2, FR24_VLM_REVIEW_V3):
+        raise ValueError("Unsupported VLM review prompt version.")
+    image_guidance = """
 
-Do not assume OCR or VLM Pass 1 is correct. Treat both values only as hypotheses to verify against the video. Pay particular attention to conflicting, mismatched, and missing values. Do not vote, blindly repeat prior values, infer hidden information, repair text, or normalize it. Preserve visible source text faithfully. Use confirmed when the video supports a prior value, corrected when a different value is directly visible, unresolved when the evidence cannot distinguish candidates, and not_visible when the field cannot be reviewed. A corrected value is a review observation, not a final system decision.
+TWO COMPLEMENTARY VISUAL INPUTS:
+- Use the supplied high-quality ticket-detail images first for exact text reading: flight IDs, aircraft code/type, registration, serial/MSN, age, static schedule/time text, and other small alphanumeric ticket fields.
+- Use the complete continuous Investigation video first for temporal/map/dynamic information: TRACK and other changing values, route, historical trail, movement, scroll context, and evidence timing.
+- The images are crops of selected views from this same Investigation, not independent events. Their source timestamps and roles identify when/which ticket section they show.
+- If selected images show different scroll states or times, do not assume dynamic values are simultaneous. Combine multiple views as corroboration only for genuinely static ticket fields.
+- If ticket text is unclear in the images, abstain as unresolved or not_visible; do not guess from either video context or supplied candidates.
+""" if prompt_version == FR24_VLM_REVIEW_V3 else ""
+    return f"""Review the complete continuous Investigation video again as an independent visual re-reader. Inspect every field and follow this order for EVERY ticket field and EVERY visual-route field:
 
-For temporal_mismatch fields, inspect around the supplied OCR point time when available. Do not invent a timestamp. {timing}
+1. FIRST inspect the relevant video evidence independently and determine what value, if any, is actually visible. Do not begin by asking whether a supplied candidate is correct. Read the field from the video before comparing any supplied values.
+2. Record the independently read value and assess whether the visual evidence is sufficient.
+3. ONLY AFTER that independent read, compare it with the supplied OCR, VLM Pass 1, normalized, and fusion candidates/statuses.
+4. Classify the result using the review semantics below. A candidate is not presumed truth, and the candidate list must never substitute for a visual read.
 
-Review context JSON:
+Use the supplied Investigation video as evidence for temporal/map understanding and supplied ticket-detail images as evidence for precise ticket text. Treat the entire OCR/VLM/fusion context as comparison material to consult only after reading the corresponding visual evidence. Do not vote among sources or choose whichever candidate seems most plausible.{image_guidance}
+
+NO CONTEXT-BASED GUESSING: Do not infer a field value from flight identity, airline, route, nearby unrelated fields, world knowledge, a likely aircraft type, prior knowledge of the flight, an OCR candidate, a VLM Pass 1 candidate, or a fusion candidate when the field itself is not visually readable. Apply this especially strictly to registration, serial number/MSN, age, aircraft type/code, scheduled/actual/estimated times, and other small text. Do not repair or normalize the visible text. Preserve the independently read source text faithfully. If the field is weak, partial, ambiguous, or has multiple possible readings, use unresolved. If the relevant field is not visible in the available video, use not_visible. Do not force a value because a candidate exists.
+
+REVIEW SEMANTICS for every field:
+- confirmed: the independent visual read matches a prior normalized value and the actual visual evidence is sufficient.
+- corrected: the independent visual read differs from prior candidates and the new value is directly supported by the video.
+- unresolved: evidence is weak, partial, ambiguous, or cannot reliably distinguish possible values.
+- not_visible: the relevant field is not visible in the available video.
+Use evidence_quality clear only when the field's actual characters/value are readable in the video. Candidate plausibility, source agreement, or a matching candidate alone never justifies clear. Use partial or weak for limited evidence and not_visible when the field cannot be seen.
+
+Review ALL fields: agreements, conflicts, ocr_only, vlm_only, unavailable, and temporal_mismatch. Independently reread even agreement fields. Be especially strict with conflict, vlm_only, ocr_only, and temporal_mismatch fields. Do not let agreement act as proof or let an only-source candidate act as a cue to guess.
+
+For OCR-only fields, independently inspect the video without favoring OCR. For VLM-only fields, independently inspect without favoring Pass 1. For agreements, reread rather than assume correctness. For conflicts, do not choose which candidate looks more likely: read the field, then compare. If a clearly readable value matches one candidate, report that value; if it differs from all candidates, report the visible value as corrected; if it cannot be read reliably, abstain as unresolved or not_visible. Do not implement majority voting.
+
+For temporal_mismatch fields such as TRACK, altitude, speed, coordinates, or vertical speed, use the relevant original-video time context to inspect the value at the appropriate moment. A supplied timestamp may locate the evidence; it does not make the supplied OCR value true. Values that differ at distinct times are not automatically contradictions. Do not invent an evidence timestamp. {timing}
+
+For visual-route fields, independently inspect the map, aircraft position, trail, and other visible route evidence FIRST. Only then compare your independent map read with Pass 1 route claims and the deterministic TRACK comparison. Do not infer a departure location from ticket origin, flight number, airline, or route text unless the map itself supports it. If an exact departure point is not visually clear, describe only what is supported and use inferred, unresolved, or not_visible as appropriate. Keep route claims separate from ticket origin and destination, and report direction consistency without selecting either source as authoritative.
+
+Priority is a review-order aid only: HIGH fields include conflicts, temporal mismatches, one-source values, and unavailable values; NORMAL agreement fields still require an independent visual reread. Do not skip fields at either priority.
+
+Review context JSON (for comparison only, after the independent visual read):
 {json.dumps(_context_payload(context), ensure_ascii=False, separators=(',', ':'))}
 
-Review the map separately from ticket fields. Recheck each visual route claim and the deterministic TRACK-direction comparison against the full video. Preserve observed versus inferred versus not_visible for route claims, and report direction consistency without selecting either source as authoritative. Never place map-derived context in ticket origin/destination fields.
-
-Return one JSON object with a `fields` object keyed by all canonical ticket field names shown in the context, and a separate `visual_route` object keyed by the four visual route field names. Each review item must contain reviewed_value, review_status, evidence_quality, evidence_time_s, and notes. Use confirmed, corrected, unresolved, or not_visible for review_status. Use clear, partial, weak, or not_visible for evidence_quality. Values may be null when unresolved or not visible. Review every ticket and visual route field."""
+Return one JSON object with a `fields` object keyed by all canonical ticket field names shown in the context, and a separate `visual_route` object keyed by the four visual route field names. Each ticket review item must contain reviewed_value, review_status, evidence_quality, evidence_time_s, and notes. Each visual_route review item must contain those same five keys plus observation_status. Use confirmed, corrected, unresolved, or not_visible for review_status. Use clear, partial, weak, or not_visible for evidence_quality. Use observed, inferred, or not_visible for observation_status, preserving the route-evidence distinction. Values and notes may be null when appropriate. Review every ticket and visual-route field."""
 
 
 @dataclass(frozen=True)
@@ -312,7 +355,8 @@ class VLMReviewRequest:
     source_end_s: float
     context: VLMReviewContext
     prompt: str
-    prompt_version: str = FR24_VLM_REVIEW_V1
+    ticket_images: tuple[TicketDetailImage, ...] = ()
+    prompt_version: str = FR24_VLM_REVIEW_V2
 
     def __post_init__(self) -> None:
         """Validate full-clip provenance and ensure prompt/context identities match."""
@@ -341,8 +385,44 @@ class VLMReviewRequest:
             raise ValueError("Request provenance must match its review context.")
         if not isinstance(self.prompt, str) or not self.prompt.strip():
             raise ValueError("prompt must be a nonempty string.")
-        if self.prompt_version != FR24_VLM_REVIEW_V1:
+        images = tuple(self.ticket_images)
+        if any(not isinstance(item, TicketDetailImage) for item in images):
+            raise TypeError("ticket_images must contain TicketDetailImage records.")
+        if len({item.image_path for item in images}) != len(images):
+            raise ValueError("ticket_images must not contain duplicate image paths.")
+        if self.prompt_version == FR24_VLM_REVIEW_V3 and not images:
+            raise ValueError("VLM review v3 requires at least one selected ticket detail image.")
+        object.__setattr__(self, "ticket_images", images)
+        if self.prompt_version not in (FR24_VLM_REVIEW_V2, FR24_VLM_REVIEW_V3):
             raise ValueError("Unsupported VLM review prompt version.")
+
+
+@dataclass(frozen=True)
+class TicketDetailImage:
+    """Reference one existing selected representative's ticket crop and provenance."""
+
+    image_path: Path
+    source_timestamp_s: float
+    role: str
+    width: int
+    height: int
+    section: str
+
+    def __post_init__(self) -> None:
+        """Validate crop reference, source time, dimensions, and descriptive metadata."""
+        if not isinstance(self.image_path, Path):
+            raise TypeError("image_path must be pathlib.Path.")
+        if isinstance(self.source_timestamp_s, bool) or not isinstance(self.source_timestamp_s, Real):
+            raise TypeError("source_timestamp_s must be a real number, not bool.")
+        if not math.isfinite(self.source_timestamp_s) or self.source_timestamp_s < 0:
+            raise ValueError("source_timestamp_s must be finite and nonnegative.")
+        for name in ("width", "height"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer.")
+        for name in ("role", "section"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
+                raise ValueError(f"{name} must be a nonempty string.")
 
 
 def build_vlm_review_request(
@@ -350,6 +430,8 @@ def build_vlm_review_request(
     fused_result: FusedInvestigationResult,
     *,
     pass1_result: VLMInvestigationResult,
+    ticket_images: tuple[TicketDetailImage, ...] = (),
+    prompt_version: str = FR24_VLM_REVIEW_V2,
 ) -> VLMReviewRequest:
     """Create Pass 2 request from Pass 1's complete clip and cross-check result."""
     if not isinstance(base_request, VLMRequest):
@@ -371,7 +453,9 @@ def build_vlm_review_request(
         source_start_s=base_request.source_start_s,
         source_end_s=base_request.source_end_s,
         context=context,
-        prompt=build_vlm_review_prompt(context),
+        prompt=build_vlm_review_prompt(context, prompt_version=prompt_version),
+        ticket_images=ticket_images,
+        prompt_version=prompt_version,
     )
 
 
@@ -423,6 +507,8 @@ class VLMRouteReviewObservation:
     review_status: Literal["confirmed", "corrected", "unresolved", "not_visible"]
     evidence_quality: Literal["clear", "partial", "weak", "not_visible"]
     observation_status: Literal["observed", "inferred", "not_visible"]
+    evidence_time_s: float | None = None
+    notes: str | None = None
 
     def __post_init__(self) -> None:
         """Validate route review identity and preserve evidence-status distinctions."""
@@ -438,6 +524,15 @@ class VLMRouteReviewObservation:
             raise ValueError("reviewed_value must be nonempty text or None.")
         if self.observation_status == "not_visible" and self.reviewed_value is not None:
             raise ValueError("not_visible route review must have a null reviewed_value.")
+        if self.evidence_time_s is not None and (
+            isinstance(self.evidence_time_s, bool)
+            or not isinstance(self.evidence_time_s, Real)
+            or not math.isfinite(self.evidence_time_s)
+            or self.evidence_time_s < 0
+        ):
+            raise ValueError("evidence_time_s must be finite nonnegative seconds or None.")
+        if self.notes is not None and not isinstance(self.notes, str):
+            raise TypeError("notes must be a string or None.")
 
 
 @dataclass(frozen=True)
@@ -592,19 +687,56 @@ def parse_vlm_review_result(
     if not isinstance(route_payload, dict):
         diagnostics.append("Pass 2 response must contain a visual_route object.")
     else:
+        route_claim_names = {
+            "visual_flight_direction_sector": "direction_sector",
+            "visual_flight_direction_text": "direction_text",
+            "visual_route_description": "route_description",
+            "visual_departure_context": "departure_context",
+        }
         for name in REVIEW_ROUTE_FIELDS:
             item = route_payload.get(name)
             if not isinstance(item, dict):
                 diagnostics.append(f"Missing or invalid visual route review: {name}.")
                 continue
             try:
+                observation_status = item.get("observation_status")
+                if "observation_status" not in item:
+                    claim = getattr(
+                        request.context.visual_route,
+                        route_claim_names[name],
+                        None,
+                    )
+                    if (
+                        item.get("review_status") == "confirmed"
+                        and claim is not None
+                        and claim.value is not None
+                        and item.get("reviewed_value") == claim.value
+                    ):
+                        # Earlier prompt versions omitted this key. For an exact
+                        # confirmation, retain the Pass 1 claim's source status.
+                        observation_status = claim.status
+                    elif (
+                        item.get("review_status") == "not_visible"
+                        and item.get("reviewed_value") is None
+                    ):
+                        observation_status = "not_visible"
+                    else:
+                        raise ValueError("observation_status is required for non-confirming reviews")
                 observation = VLMRouteReviewObservation(
                     field_name=name,
                     reviewed_value=item.get("reviewed_value"),
                     review_status=item.get("review_status"),
                     evidence_quality=item.get("evidence_quality"),
-                    observation_status=item.get("observation_status"),
+                    observation_status=observation_status,
+                    evidence_time_s=item.get("evidence_time_s"),
+                    notes=item.get("notes"),
                 )
+                if observation.evidence_time_s is not None and not (
+                    request.source_start_s
+                    <= observation.evidence_time_s
+                    <= request.source_end_s
+                ):
+                    raise ValueError("evidence_time_s outside request source interval")
                 routes[name] = observation
             except (TypeError, ValueError):
                 diagnostics.append(f"Invalid visual route review values: {name}.")
