@@ -107,7 +107,9 @@ Phase 9
 
 Outcome:
 
-Repeated aircraft investigations are linked when appropriate, and the full canonical JSON + operational log + detailed report are generated.
+Phase 6 InvestigationRecords are structured as independent canonical events in
+a session, ready for future deterministic operational and detailed diary
+renderers. Revisit detection is not required for the Events Diary MVP.
 
 ### Roadmap boundary
 
@@ -880,123 +882,167 @@ absorbed into Phase 6.
 
 ---
 
-# 12. Phase 8 — Tracked Aircraft Entity Matching
+# 12. Phase 7 — Canonical Event Data & Events Diary Foundation
 
-## Objective
+**Status: COMPLETE. Phases 7.1–7.6 are COMPLETE. Phase 8 is NEXT.**
 
-Link revisits to the same operational target.
+Phase 7 converts final Phase 6 `InvestigationRecord` results into a clean
+canonical Events Diary data layer. It structures the resolved results; it does
+not perform new inference.
 
-## Evidence strength
+## Planned subphases
 
-Very strong:
+- **7.1 Define Events Diary field set — COMPLETE.**
+- **7.2 `CanonicalEvent` and `CanonicalSession` contracts — COMPLETE.**
+- **7.3 Missing / unresolved data representation — COMPLETE.**
+- **7.4 Session aggregation and real-artifact validation — COMPLETE.**
+- **7.5 Renderer-ready output contract — COMPLETE.**
+- **7.6 Final canonical-layer validation — COMPLETE.**
 
-```text
-registration exact match
-```
+## Event semantics
 
-Strong:
+One Phase 6 `InvestigationRecord` becomes exactly one canonical event. Events
+remain independent, are not merged or grouped, and are ordered by Investigation
+start time. The MVP performs no aircraft or flight revisit matching.
 
-```text
-flight number
-callsign
-route continuity
-position progression
-```
+## Approved field families
 
-Medium:
+| Family | Fields |
+| --- | --- |
+| Event metadata | `event_id`, `investigation_id`, `start_time_s`, `end_time_s` |
+| Flight | `primary_flight_id`, `alternate_flight_id`, `airline_name` |
+| Route and times | `origin_airport_code`, `destination_airport_code`, `origin_scheduled_time`, `origin_actual_time`, `destination_scheduled_time`, `destination_estimated_or_actual_time` |
+| Aircraft | `registration`, `aircraft_code`, `aircraft_type` |
+| Movement and visual context | `track_degrees`, `derived_track_direction`, `visual_flight_direction`, `visual_route_description`, `visual_departure_context` |
 
-```text
-origin/destination
-aircraft type
-compatible route
-```
+`SERIAL_NUMBER`, `AGE`, `MACH`, `TEMPERATURE`, `FIR/UIR`, `LATITUDE`,
+`LONGITUDE`, detailed altitude/speed telemetry, low-level OCR/VLM diagnostics,
+raw fusion internals and provider metadata remain available in
+`InvestigationRecord` or evidence/debug layers. They do not propagate into the
+canonical Events Diary unless a future requirement changes the field set.
 
-Weak:
+Canonical values remain directly readable (for example,
+`registration: "T7-ME2"`). Missing information is summarized separately under
+`data_quality`, conceptually with `unresolved_fields` and
+`not_available_fields`; Phase 7.1 does not prescribe repeated nested
+value/status/provenance wrappers for every field.
 
-```text
-airline
-time proximity
-```
+`CanonicalSession` is the only input future deterministic renderers need.
+Renderers do not inspect OCR/VLM responses, fusion internals, provider metadata,
+or Phase 6 evidence graphs. Rendered text is never authoritative.
 
-## Decisions
+### Phase 7.5 renderer field profiles
 
-```text
-MATCH
-AMBIGUOUS
-NO_MATCH
-```
+The immutable ordered `OPERATIONAL_DIARY_PROFILE` and
+`DETAILED_DIARY_PROFILE` select canonical field paths without duplicating
+`CanonicalEvent` data or generating presentation text. Profile construction
+rejects duplicates and every path outside the canonical schema, including
+stale names and Phase 6 internals. Operational paths are an ordered subset of
+Detailed paths.
 
-## Entity model
+Operational order is `event_time_s`; flight primary ID, alternate ID and
+airline; route origin and destination; scheduled/actual departure and
+scheduled/estimated-or-actual arrival; aircraft registration, code and type;
+then `movement.direction`. Detailed preserves that sequence, then appends
+`investigation_id`, `start_time_s`, `end_time_s`, `movement.track_degrees`,
+`movement.visual_flight_direction`, `movement.visual_route_description`,
+`movement.visual_departure_context`, and unresolved/not-available quality
+lists. `event_id` identifies sequential canonical display order while
+`investigation_id` preserves original Investigation identity.
 
-Static-ish information accumulates evidence.
+Renderers use `CanonicalEvent.field_state(path)`: `value` supplies the canonical
+value; `unresolved` and `not_available` remain distinct; and `absent` must not
+be labeled N/A automatically. Presentation labels such as “Unresolved” or
+“N/A” remain renderer choices and never enter canonical values. Deterministic
+`movement.direction` is derived from final accepted TRACK, while independently
+reviewed `movement.visual_flight_direction` may remain available when TRACK is
+unresolved. `CanonicalSession` supplies schema version, source name and
+duration, event count, and chronological event ordering, so renderers need not
+sort again.
 
-Time-varying information remains a timeline.
+The operational diary will be short and concrete, emphasizing flight IDs,
+airline, route, scheduled/actual/estimated times, aircraft code/type and
+registration, with direction where useful. It excludes technical/debug detail.
+The detailed diary/report can include the same core information plus TRACK and
+human-readable direction, visual direction/route/departure context, unresolved
+and unavailable fields, and useful event context. It will not expose Phase 6
+debug internals.
 
-## Done when
+The canonical layer does not call Gemini or OCR, analyze video, perform fusion
+or semantic inference, or match aircraft/flights across Investigations. Phase 6
+owns understanding and evidence resolution; Phase 7 owns structuring and
+validating the final useful information.
 
-Revisits are linked correctly without forcing uncertain matches.
+### Phase 7.2 contract implementation
+
+`CanonicalEvent` is immutable and groups event metadata, flight, route,
+aircraft, movement and data-quality paths. Its `event_time_s` is currently the
+Investigation start time; the separate `start_time_s` and `end_time_s` retain
+the original interval. `CanonicalSession` contains schema version `1.0`,
+logical source-video name/duration, events, and a derived `events_count`. Events
+are sorted by `(event_time_s, investigation_id)`, independent of input order.
+The external shape serializes to JSON-compatible objects and arrays.
+
+The converter trusts `FinalInvestigationResult` statuses: `resolved` and
+`resolved_single_source` propagate final values; `unresolved` and
+`not_available` emit null values and canonical paths under `data_quality`.
+If a source key is absent from the final map, its canonical value remains null
+without inventing a quality status.
+TRACK direction and visual route context use Phase 6's already-computed
+direction-consistency and final Pass 2 visual reviews when available; raw Pass 1
+claims are not treated as final reviewed values. Missing visual reviews remain
+absent, while explicit unresolved and not-visible reviews map to distinct quality
+states. The converter does not inspect raw OCR/VLM evidence or Phase 6 diagnostics. Generic OCR time labels
+`SCHEDULED`, `ACTUAL` and `ESTIMATED` do not identify origin versus destination;
+only side-specific Phase 6 final fields map to the canonical time fields.
+The canonical session aggregation and renderer-ready field profiles are
+implemented and validated. Phase 8 will implement actual deterministic output.
+
+### Phase 7.3 missing-data semantics
+
+Resolved values, including `resolved_single_source`, are stored directly.
+Unresolved, not-available and absent fields all serialize as JSON `null`, with
+only the first two represented in `data_quality`. Unresolved means expected
+information could not be determined reliably. Not-available means the displayed
+or source data did not provide it; it does not imply classified or restricted
+information. A field absent from Phase 6's final map remains unclassified.
+Future renderers may display unresolved as “Unresolved” or “Could not determine”
+and not-available as “N/A” or “Not available”; these strings are never canonical
+field values. Quality lists are sorted lexicographically, unique, disjoint, and
+validated against canonical paths and null-value consistency. `field_state(path)`
+provides `value`, `unresolved`, `not_available` or `absent` at runtime without
+changing serialized JSON.
+
+### Phase 7.4 session aggregation
+
+`build_canonical_session(video_result)` consumes the existing Phase 6
+`VideoInvestigationResult` as the Phase 6-to-Phase 7 aggregation boundary. One
+source video produces one `CanonicalSession`; each
+`InvestigationRecord` produces one independent event. It validates source-video
+identity using the Phase 6 container contract, sorts by `(event_time_s, investigation_id)`,
+then assigns sequential event IDs starting at zero. Investigation IDs remain
+unchanged and need not be contiguous. The authoritative metadata supplies the
+logical filename and duration. An empty record sequence is a valid empty session
+with `events_count == 0`. An incomplete video result with failed Investigations
+is rejected rather than silently omitting those failures. Aggregation performs no inference or aircraft grouping;
+quality paths remain local to each event. Offline validation used a typed
+projection of saved Phase 6 artifacts and the production aggregation API. In
+both records, `direction_consistency.derived_direction` is intermediate
+OCR-derived evidence, while final Phase 6 `TRACK` is unresolved with a null
+value. Therefore `movement.track_degrees` and deterministic
+`movement.direction` remain null and are marked unresolved. Independently
+reviewed `movement.visual_flight_direction` is retained from final Pass 2
+review. The saved artifacts are JSON summaries, so the full
+`InvestigationRecord` evidence graph was not reconstructed.
 
 ---
 
-# 13. Phase 9 — Canonical Output & Renderers
+# 13. Phase 8 — Deterministic Events Diary Renderer (NEXT)
 
-## Objective
-
-Produce the final structured session record and user-facing reports.
-
-## Outputs
-
-```text
-session.json
-operational_log.txt
-detailed_report.txt
-```
-
-Optional:
-
-```text
-debug/
-```
-
-## Canonical record
-
-Expected top-level areas:
-
-```text
-schema_version
-session
-investigations
-entities
-processing_warnings
-processing_errors
-```
-
-## Operational log
-
-Concise, chronological, readable.
-
-## Detailed report
-
-Includes:
-
-```text
-provenance
-confidence
-conflicts
-additional ticket fields
-evidence references
-analysis notes
-```
-
-## Renderer rule
-
-Renderers format only.
-
-No inference or model calls.
-
-## Done when
-
-A human reviewer can compare the generated outputs against the video and confirm that the system accurately describes the operator’s activity and visible flight information.
+Phase 8 produces the actual Operational Diary and Detailed Diary from
+`CanonicalSession` using the approved field profiles. Rendering is deterministic
+presentation of canonical data only; it does not inspect Phase 6 evidence or
+repeat inference, fusion, or resolution.
 
 ---
 
@@ -1041,6 +1087,12 @@ new bottlenecks or opportunities. Candidate work includes:
    outputs.
 10. **New capabilities:** features discovered during MVP validation and justified
     by real end-to-end usage.
+11. **Aircraft entity and revisit analysis:** detect repeated Investigations of
+    the same aircraft; match aircraft and flights across Investigations; add
+    revisit links and entity grouping; and, if later implemented, define
+    `MATCH` / `AMBIGUOUS` / `NO_MATCH` semantics. This is a future capability,
+    not an Events Diary MVP requirement; every Investigation remains an
+    independent event until then.
 
 #### VLM optimization backlog
 
@@ -1056,8 +1108,9 @@ implemented as part of Phase 6 closure.
 ### Roadmap status
 
 - Phase 6 — COMPLETE.
-- Phase 7 — NEXT.
-- Phases 8–9 — planned.
+- Phase 7 — COMPLETE (7.1–7.6 COMPLETE).
+- Phase 8 — NEXT: Deterministic Events Diary Renderer.
+- Phase 9 — planned.
 - Phase 10 — System Optimization & Improvement, post-MVP.
 
 The former standalone route-analysis phase remains absorbed into Phase 6.

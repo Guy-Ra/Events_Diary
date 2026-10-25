@@ -53,9 +53,24 @@ Known limitation: occasional low-priority small-text errors may remain after
 crop-assisted review. In one Investigation AGE was visibly 6 years while Pass 2
 returned 4 years. This is accepted for MVP and deferred to Phase 10.
 
-**Roadmap:** Phase 6 COMPLETE; Phase 7 NEXT; Phases 8–9 planned; Phase 10 System
+**Roadmap:** Phase 6 COMPLETE; Phase 7 COMPLETE (7.1–7.6 COMPLETE); Phase 8
+NEXT (Deterministic Events Diary Renderer); Phase 9 planned; Phase 10 System
 Optimization & Improvement is post-MVP. The former standalone route-analysis
 phase remains absorbed into Phase 6.
+
+**Phase 7 — Canonical Event Data & Events Diary Foundation is COMPLETE.**
+Phase 7.1 field selection, Phase 7.2 (`CanonicalEvent` and
+`CanonicalSession` contracts), and Phase 7.3 missing-data semantics are complete;
+Phase 7.4 session aggregation and saved-artifact validation are complete.
+Canonical direction follows final TRACK; intermediate OCR-derived direction is
+not propagated when final TRACK is unresolved. Phase 7.5 renderer-ready field
+profiles and final canonical-layer validation are complete. Phase 8 will produce
+the actual Operational Diary and Detailed Diary from `CanonicalSession` only.
+One Phase 6
+`InvestigationRecord` becomes
+one chronologically ordered canonical event, with no merging or revisit
+inference. `CanonicalSession` JSON will be the source of truth for future
+deterministic operational and detailed diary renderers.
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,
@@ -71,7 +86,7 @@ The system is intended to:
 - extract structured information from the aircraft ticket;
 - describe visible route context and movement direction;
 - use OCR, computer vision, and selective VLM assistance;
-- identify repeated investigations of the same aircraft;
+- preserve each Investigation as an independent event;
 - generate a canonical structured session record;
 - render a concise operational log and a detailed report.
 
