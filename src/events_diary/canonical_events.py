@@ -3,8 +3,9 @@
 This module converts final Phase 6 Investigation records into the small set of
 human-useful Events Diary fields. It does not inspect evidence, repeat fusion,
 call OCR or Gemini, infer missing values, or expose Phase 6 diagnostics. The
-canonical session is serializable source data for future deterministic
-renderers; no renderer or file output is implemented here.
+canonical session is serializable source data for deterministic renderers. The
+field-level presentation helpers live in ``renderer_core``; this module does not
+render diary documents or write files.
 """
 
 from __future__ import annotations

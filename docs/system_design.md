@@ -1028,7 +1028,7 @@ does not define an active phase and adds no VLM call.
 
 ## Phase 7 — Canonical Event Data & Events Diary Foundation
 
-**Status: COMPLETE. Phases 7.1–7.6 are COMPLETE. Phase 8 is NEXT.**
+**Status: COMPLETE. Phases 7.1–7.6 are COMPLETE. Phase 8 is COMPLETE.**
 
 Phase 7 structures final Phase 6 `InvestigationRecord` outputs into a canonical
 Events Diary layer. It performs no new inference. The mapping is:
@@ -1190,6 +1190,10 @@ The backlog includes residual VLM small-text errors and low-priority field
 accuracy (including stricter review of fields such as AGE), model comparison or
 upgrades, media-resolution tuning, crop-selection improvements, prompt
 optimization, latency/runtime optimization, and provider/quota optimization.
+It may also evaluate asking the VLM for a richer unified
+`visual_route_description` that includes departure context. The current VLM
+prompt and contract remain unchanged until that future work is approved and
+calibrated.
 
 Future revisit/entity capability: detect repeated Investigations of the same
 aircraft; match the same aircraft or flight across Investigations; create revisit
@@ -1198,16 +1202,91 @@ links and entity groups; and, if implemented, define `MATCH`, `AMBIGUOUS`, and
 Investigation remains an independent event.
 
 Roadmap status: Phase 6 COMPLETE, Phase 7 COMPLETE (7.1–7.6 COMPLETE),
-Phase 8 NEXT (Deterministic Events Diary Renderer), Phase 9 planned, and Phase 10
+Phase 8 COMPLETE (8.1–8.5 COMPLETE), full system integration next, Phase 9 planned, and Phase 10
 System Optimization & Improvement post-MVP. The former standalone route-analysis
 phase remains absorbed into Phase 6.
 
-## Phase 8 — Deterministic Events Diary Renderer (NEXT)
+## Phase 8 — Deterministic Events Diary Renderer (COMPLETE)
 
-Phase 8 will produce the actual Operational Diary and Detailed Diary from
-`CanonicalSession` using the approved field profiles. It is a deterministic
-presentation layer and will not inspect Phase 6 evidence or repeat inference,
-fusion, or resolution.
+Phase 8 produces the Operational Diary and Detailed Diary from `CanonicalSession`
+using the approved field profiles. It is a deterministic presentation layer and
+will not inspect Phase 6 evidence or repeat inference, fusion, or resolution.
+
+- **8.1 Renderer core and display semantics — COMPLETE.**
+- **8.2 Operational Diary v1 — COMPLETE.** `render_operational_diary` accepts
+  only `CanonicalSession` and uses the approved Operational profile plus
+  `renderer_core.py`. It renders one concise block per Investigation in session
+  order, with a 1-based Event number and the full video-relative start/end
+  interval. Flight IDs, route endpoints, and aircraft type/code are composed
+  only from available canonical values. Unresolved, not-available, and absent
+  fields are omitted; no facts are inferred and no Phase 6 modules are used.
+- **8.3 Detailed Diary v1 — COMPLETE.** `render_detailed_diary` accepts only
+  `CanonicalSession` and uses the approved Detailed profile plus
+  `renderer_core.py`. Resolved TRACK and deterministic direction share one line;
+  unusable TRACK omits that line. Visual direction remains separate, and visual
+  route and departure-context text share one section without rewriting either.
+  It exposes no quality paths, makes no inference, and has no Phase 6 dependency.
+- **8.4 Output formatting and workspace conventions — COMPLETE.** Both
+  renderers return deterministic strings. Fixed future destinations are
+  `experiment/output/operational_diary.txt` and
+  `experiment/output/detailed_diary.txt`; `experiment/input/` and
+  `experiment/output/` form the single-video MVP workspace. Generated contents
+  are ignored except `.gitkeep` placeholders. Filesystem writes belong to the
+  future orchestrator, not a Phase 8 production writer API.
+- **8.5 Real end-to-end renderer validation and closure — COMPLETE.** The real
+  Phase 7.4 session for `investigation_switch_test.mp4` passed both production
+  renderers. Expected event content and intervals, exact parity with prior
+  accepted diary strings, determinism, UTF-8-safe strings, both approved
+  profiles, renderer import boundaries, no-inference presentation,
+  empty-session behavior, and workspace policy were validated. See
+  `data/debug/events_diary/phase_8_5/phase_8_5_validation_report.txt`.
+
+Phase 8 production APIs are the pure string renderers:
+`render_operational_diary(session) -> str` and
+`render_detailed_diary(session) -> str`. They do not write files. Empty sessions
+continue to return empty strings. Historical `data/` artifacts are retained
+until the complete video-to-diary pipeline is integrated and validated,
+followed by a deliberate cleanup.
+
+The Phase 8 rendering flow is `CanonicalSession` → Operational Diary string +
+Detailed Diary string. During future full-system integration, the orchestrator
+will select/load the input video, run the full pipeline, receive both strings,
+and write them to `experiment/output/operational_diary.txt` and
+`experiment/output/detailed_diary.txt`. The single-video MVP workspace is
+`experiment/input/` and `experiment/output/`. Rendering makes no inference and
+has no Phase 6 runtime dependency. Historical `data/` cleanup remains
+deferred until the complete video-to-diary flow is integrated and validated.
+The future unified VLM visual-route description remains backlog.
+
+Phase 8 is COMPLETE (8.1–8.5 COMPLETE). The next major task is full system
+integration from video input through detection, sampling, Investigation
+extraction, configured understanding, `InvestigationRecord(s)`,
+`CanonicalSession`, and both diary outputs. Future configuration must support
+`ocr_only`, `vlm_only`, and `ocr_vlm` while preserving existing VLM
+provider/model/endpoint/runtime configuration. Neither the integration nor
+understanding-mode configuration is implemented here.
+
+Phase 8.1 reuses Phase 7.5 profiles for field selection and centralizes human
+labels, state-aware value display, TRACK degrees, and video-relative time
+formatting. `value` displays the canonical value; `unresolved` displays “Could
+not determine”; `not_available` displays “N/A”; `absent` is omitted. Canonical
+paths and internal state names are not user-facing. The core does not infer,
+normalize, or combine canonical facts.
+
+The Operational Diary is plain text intended for concise chronological scanning.
+Its content is restricted to `OPERATIONAL_DIARY_PROFILE`; the header's
+Investigation interval is presentation metadata. A single available route
+endpoint is shown with its origin/destination label, while a complete pair is
+shown as `origin → destination`. Missing operational values do not create a
+quality section or display missingness labels.
+
+The Detailed Diary adds the approved Detailed-profile movement and visual
+context fields to the operational facts. Resolved TRACK is displayed together
+with its deterministic direction when available; unresolved, not-available, or
+absent TRACK omits that line. Visual direction remains separate from TRACK.
+Visual route and departure-context text share one section and are concatenated
+without rewriting either canonical value. The renderer does not show
+`investigation_id`, canonical paths, or data-quality path lists.
 
 ---
 

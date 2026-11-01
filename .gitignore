@@ -13,3 +13,8 @@ __pycache__/
 Thumbs.db
 
 data/
+
+experiment/input/*
+!experiment/input/.gitkeep
+experiment/output/*
+!experiment/output/.gitkeep

@@ -169,8 +169,17 @@ Phase 7 is **COMPLETE**: **7.1 Define Events Diary field set is COMPLETE**;
 **7.4 Session aggregation and real-artifact validation are COMPLETE**.
 **7.5 Renderer-ready output contract is COMPLETE**; **7.6 final canonical-layer
 validation is COMPLETE**. **Phase 8 — Deterministic Events Diary Renderer — is
-NEXT** and will produce actual Operational and Detailed Diary outputs from
-`CanonicalSession`.
+COMPLETE**: **8.1 Renderer Core & Display Semantics, 8.2 Operational Diary,
+8.3 Detailed Diary, 8.4 Output Files & Formatting, and 8.5 Real End-to-End
+Renderer Validation are COMPLETE**. Phase 8 produces actual Operational and
+Detailed Diary outputs from `CanonicalSession`.
+
+Phase 8.1 reuses Phase 7.5 profiles for field selection and centralizes human
+labels, state-aware value display, TRACK degrees, and video-relative time
+formatting. `value` displays the canonical value; `unresolved` displays “Could
+not determine”; `not_available` displays “N/A”; `absent` is omitted. Canonical
+paths and internal state names are not user-facing. The core does not infer,
+normalize, or combine canonical facts.
 
 The approved Phase 7.1 field families are event metadata (`event_id`,
 `investigation_id`, `start_time_s`, `end_time_s`); flight IDs and airline;
@@ -185,13 +194,49 @@ summarized separately under `data_quality` (for example,
 `unresolved_fields` and `not_available_fields`), without requiring nested
 value/status/provenance wrappers for every field.
 
-The operational diary is concise and emphasizes flight IDs, airline, route,
-times, aircraft code/type and registration, with direction where useful. The
-detailed diary/report carries the same core event fields and may add TRACK and
-human-readable direction, visual route context, data-quality summaries and
-useful event context. Neither renderer exposes unnecessary Phase 6 internals.
+The Operational Diary v1 accepts `CanonicalSession` only and uses the approved
+Operational profile and shared renderer core. It renders one chronological
+plain-text block per Investigation, with a 1-based Event number and full
+video-relative start/end interval. Flight identifiers and aircraft type/code
+are combined when both are available; a complete route is shown as origin to
+destination, while one available endpoint retains its origin/destination label.
+Resolved values are displayed; unresolved, not-available and absent values are
+omitted. Direction is shown only when resolved. The renderer does not expose
+canonical paths or quality internals, infer facts, or depend on Phase 6 modules.
+The Detailed Diary v1 also accepts only `CanonicalSession` and the approved
+Detailed profile. A resolved TRACK and usable deterministic direction share one
+line; if TRACK is unresolved, not-available, or absent, both are omitted.
+Visual direction remains separate. Visual-route and departure-context strings
+are shown together under one heading without rewriting either value. No
+inference, raw quality-path lists, or Phase 6 dependency is introduced.
 Both are deterministic renderings of `CanonicalSession` JSON, which remains the
 source of truth.
+
+Phase 8.4 established the output formatting conventions and single-video MVP
+workspace: `experiment/input/` and `experiment/output/`. The renderer APIs
+return deterministic strings and do not write files. Fixed future output names
+are `experiment/output/operational_diary.txt` and
+`experiment/output/detailed_diary.txt`. Workspace contents are ignored by Git
+except `.gitkeep` placeholders. Historical `data/` artifacts are retained
+until full-pipeline integration is complete and validated, followed by a
+deliberate cleanup.
+
+Phase 8.5 validated the real two-event Phase 7.4 session from
+`investigation_switch_test.mp4` through both renderers. The rendered text
+matched the established Operational and Detailed validation artifacts exactly;
+determinism, UTF-8-safe strings, approved profiles, renderer boundaries,
+no-inference behavior, and empty-session behavior passed.
+The closure report is stored at
+`data/debug/events_diary/phase_8_5/phase_8_5_validation_report.txt`.
+
+Phase 8 is `CanonicalSession` → Operational Diary string + Detailed Diary
+string. During future full-system integration, the orchestrator will select/load
+the input video, run the full pipeline, receive both strings, and write them to
+`experiment/output/`. Rendering has no Phase 6 runtime dependency and does no
+inference. Empty sessions continue to return empty strings; future integration
+may decide whether to write a user-facing empty-state message. A unified VLM
+visual-route description remains backlog; historical `data/` cleanup remains
+deferred until full video-to-diary integration is validated.
 
 Canonical JSON stores null for unresolved, not-available and absent values.
 `data_quality.unresolved_fields` means relevant information could not be
@@ -350,8 +395,8 @@ An accepted MVP limitation is that occasional low-priority small-text errors may
 remain after crop-assisted review. One AGE value was visibly 6 years while Pass 2
 returned 4 years; this is deferred to Phase 10. The former standalone route /
 direction analysis remains absorbed into Phase 6. Roadmap status: Phase 6
-COMPLETE, Phase 7 COMPLETE (7.1–7.6 COMPLETE), Phase 8 NEXT
-(Deterministic Events Diary Renderer), Phase 9 planned,
+COMPLETE, Phase 7 COMPLETE (7.1–7.6 COMPLETE), Phase 8 COMPLETE
+(8.1–8.5 COMPLETE), full system integration next, Phase 9 planned,
 and Phase 10 System Optimization & Improvement post-MVP.
 
 ## 16. Open Product Decisions
@@ -365,16 +410,21 @@ and Phase 10 System Optimization & Improvement post-MVP.
 
 ## Appendix A. Current Project Status
 
-Phases 0–6 are complete. Phase 7.1 field selection, Phase 7.2 canonical
-contracts, Phase 7.3 missing-data semantics, Phase 7.4 session aggregation
-with saved-artifact validation, Phase 7.5 renderer-ready contract, and Phase
-7.6 final canonical-layer validation are complete. Phase 7 is complete; Phase 8, the deterministic Operational and
-Detailed Diary renderer, is next. Phase 10 is
-reserved for post-MVP optimization,
-including residual VLM small-text errors, low-priority field accuracy and AGE
-review, model comparison/upgrades, media-resolution and crop-selection
-improvements, prompt, latency/runtime, provider/quota optimization, and future
-future capability work: detecting repeated Investigations of the same aircraft,
+Phases 0–8 are complete, including Phase 8.5 real end-to-end renderer
+validation. Full system integration is the next major task: video input,
+detection/sampling and Investigation extraction, configured understanding,
+`InvestigationRecord(s)`, `CanonicalSession`, and both diaries. Its future
+configuration must support `ocr_only`, `vlm_only`, and `ocr_vlm`, preserving
+existing VLM provider/model/endpoint/runtime settings. This integration and
+configuration have not started. Phase 10 is reserved
+for post-MVP optimization, including residual VLM small-text errors,
+low-priority field accuracy and AGE review, model comparison/upgrades,
+media-resolution and crop-selection improvements, prompt, latency/runtime, and
+provider/quota optimization. Future VLM work may evaluate producing a richer
+unified `visual_route_description` that already includes departure context; the
+current VLM prompt and contract remain unchanged unless that work is separately
+approved and calibrated. Phase 10 also includes capability work for detecting
+repeated Investigations of the same aircraft,
 matching the same aircraft or flight across Investigations, creating revisit
 links and entity groups, and (if implemented) defining `MATCH`, `AMBIGUOUS` and
 `NO_MATCH` semantics. This capability is not required to create the Events

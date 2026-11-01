@@ -54,7 +54,7 @@ crop-assisted review. In one Investigation AGE was visibly 6 years while Pass 2
 returned 4 years. This is accepted for MVP and deferred to Phase 10.
 
 **Roadmap:** Phase 6 COMPLETE; Phase 7 COMPLETE (7.1–7.6 COMPLETE); Phase 8
-NEXT (Deterministic Events Diary Renderer); Phase 9 planned; Phase 10 System
+COMPLETE (8.1–8.5 COMPLETE); full system integration is next; Phase 9 planned; Phase 10 System
 Optimization & Improvement is post-MVP. The former standalone route-analysis
 phase remains absorbed into Phase 6.
 
@@ -64,8 +64,32 @@ Phase 7.1 field selection, Phase 7.2 (`CanonicalEvent` and
 Phase 7.4 session aggregation and saved-artifact validation are complete.
 Canonical direction follows final TRACK; intermediate OCR-derived direction is
 not propagated when final TRACK is unresolved. Phase 7.5 renderer-ready field
-profiles and final canonical-layer validation are complete. Phase 8 will produce
-the actual Operational Diary and Detailed Diary from `CanonicalSession` only.
+profiles and final canonical-layer validation are complete. Phase 8.1 provides
+the shared renderer core. Phase 8.2 renders a concise plain-text Operational
+Diary from `CanonicalSession` only, with one interval-headed block per
+Investigation and missing operational values omitted. Phase 8.3 shows resolved
+TRACK and deterministic direction together, omits that line when TRACK is
+unusable, and groups source-faithful visual-route and departure-context text
+under one heading. Phase 8.4 establishes the fixed output filenames and
+single-video workspace conventions; it does not add a production file writer.
+Phase 8 renderers return deterministic UTF-8-safe strings:
+`CanonicalSession → render_operational_diary(session) -> str` and
+`render_detailed_diary(session) -> str`. They make no inference and have no
+Phase 6 runtime dependency. The future orchestrator will select/load the input
+video, run the full pipeline, receive both strings, and write them to
+`experiment/output/operational_diary.txt` and
+`experiment/output/detailed_diary.txt`. Empty sessions continue to render as
+empty strings. The single-video MVP workspace uses `experiment/input/` and
+`experiment/output/`; generated contents remain ignored and `.gitkeep`
+placeholders remain trackable.
+Historical `data/` artifacts remain until full-pipeline integration is validated
+and a deliberate cleanup is performed. Phase 8.5 real-data validation is
+complete. The next major task is full system integration from video input
+through detection, sampling, Investigation extraction, configured understanding,
+CanonicalSession, and both diaries. Integration configuration must support
+`ocr_only`, `vlm_only`, and `ocr_vlm` while preserving existing VLM
+provider/model/endpoint/runtime settings. This work has not started. A unified
+VLM visual-route description remains future backlog.
 One Phase 6
 `InvestigationRecord` becomes
 one chronologically ordered canonical event, with no merging or revisit
