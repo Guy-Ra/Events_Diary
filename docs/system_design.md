@@ -997,8 +997,9 @@ scroll timing and map/route activity without changing upstream model outputs.
 
 The final validated model was `gemini-3.6-flash`. The successful complete
 validation dataset used one model throughout. Request timeout was 900 seconds;
-the retry policy allowed at most three attempts, retrying 503 and timeout with
-30-second then 90-second backoff. `gemini-3.8-flash` was an optional fallback
+the then-current policy allowed at most three attempts, retrying 503 and timeout
+with 30-second then 90-second backoff. This describes historical Phase 6
+validation; the current policy is documented below. `gemini-3.8-flash` was an optional fallback
 only for confirmed 3.6 Free Tier daily quota exhaustion and was not used in the
 successful complete dataset.
 
@@ -1178,7 +1179,7 @@ while TRACK is unresolved.
 
 ---
 
-## Phase 10 - System Optimization & Improvement
+## Phase 10 - System Optimization & Improvement (NEXT; NOT STARTED)
 
 This post-MVP phase starts only after Phases 0-9 and end-to-end validation are
 complete. Its open backlog is evidence-led and may address model/prompt quality,
@@ -1202,8 +1203,8 @@ links and entity groups; and, if implemented, define `MATCH`, `AMBIGUOUS`, and
 Investigation remains an independent event.
 
 Roadmap status: Phase 6 COMPLETE, Phase 7 COMPLETE (7.1–7.6 COMPLETE),
-Phase 8 COMPLETE (8.1–8.5 COMPLETE), full system integration next, Phase 9 planned, and Phase 10
-System Optimization & Improvement post-MVP. The former standalone route-analysis
+Phase 8 COMPLETE (8.1–8.5 COMPLETE), Phase 9 COMPLETE (9.1–9.5 COMPLETE), and
+Phase 10 System Optimization & Improvement NEXT / NOT STARTED. The former standalone route-analysis
 phase remains absorbed into Phase 6.
 
 ## Phase 8 — Deterministic Events Diary Renderer (COMPLETE)
@@ -1231,8 +1232,8 @@ will not inspect Phase 6 evidence or repeat inference, fusion, or resolution.
   `experiment/output/operational_diary.txt` and
   `experiment/output/detailed_diary.txt`; `experiment/input/` and
   `experiment/output/` form the single-video MVP workspace. Generated contents
-  are ignored except `.gitkeep` placeholders. Filesystem writes belong to the
-  future orchestrator, not a Phase 8 production writer API.
+  are ignored except `.gitkeep` placeholders. Phase 9 `main.py` owns final
+  filesystem writes; Phase 8 renderer APIs remain pure string producers.
 - **8.5 Real end-to-end renderer validation and closure — COMPLETE.** The real
   Phase 7.4 session for `investigation_switch_test.mp4` passed both production
   renderers. Expected event content and intervals, exact parity with prior
@@ -1249,22 +1250,16 @@ until the complete video-to-diary pipeline is integrated and validated,
 followed by a deliberate cleanup.
 
 The Phase 8 rendering flow is `CanonicalSession` → Operational Diary string +
-Detailed Diary string. During future full-system integration, the orchestrator
-will select/load the input video, run the full pipeline, receive both strings,
-and write them to `experiment/output/operational_diary.txt` and
+Detailed Diary string. Phase 9 `main.py` selects/loads the input video, runs the
+configured pipeline, receives both strings, and writes them to
+`experiment/output/operational_diary.txt` and
 `experiment/output/detailed_diary.txt`. The single-video MVP workspace is
 `experiment/input/` and `experiment/output/`. Rendering makes no inference and
 has no Phase 6 runtime dependency. Historical `data/` cleanup remains
 deferred until the complete video-to-diary flow is integrated and validated.
 The future unified VLM visual-route description remains backlog.
 
-Phase 8 is COMPLETE (8.1–8.5 COMPLETE). The next major task is full system
-integration from video input through detection, sampling, Investigation
-extraction, configured understanding, `InvestigationRecord(s)`,
-`CanonicalSession`, and both diary outputs. Future configuration must support
-`ocr_only`, `vlm_only`, and `ocr_vlm` while preserving existing VLM
-provider/model/endpoint/runtime configuration. Neither the integration nor
-understanding-mode configuration is implemented here.
+Phase 8 is COMPLETE. Phase 9 full-system integration and real-video validation are COMPLETE; the production entry point has been exercised in all three understanding modes. Phase 10 is the next phase and remains NOT STARTED.
 
 Phase 8.1 reuses Phase 7.5 profiles for field selection and centralizes human
 labels, state-aware value display, TRACK degrees, and video-relative time
@@ -1287,6 +1282,132 @@ absent TRACK omits that line. Visual direction remains separate from TRACK.
 Visual route and departure-context text share one section and are concatenated
 without rewriting either canonical value. The renderer does not show
 `investigation_id`, canonical paths, or data-quality path lists.
+
+---
+
+## Phase 9 — Full System Integration & Main Orchestrator (COMPLETE)
+
+Phase 9 connects existing Phase 1–8 components without moving their algorithms
+into the top-level entry point. The MVP selects exactly one `.mp4` video from
+`experiment/input/`. Zero videos and multiple videos fail clearly; unsupported
+files are ignored. `main.py` writes the two Phase 8 renderer strings to fixed
+UTF-8 paths in `experiment/output/`, overwriting the latest
+run without per-video folders or run identifiers.
+
+### 9.1 Main Orchestrator & Runtime Configuration — COMPLETE
+
+`config.py` owns the typed `UnderstandingMode` (`ocr_only`, `vlm_only`,
+`ocr_vlm`), `RuntimeConfig`, workspace defaults, and loading of existing VLM
+settings. `load_runtime_config()` loads the project `.env` through
+`python-dotenv`; `EVENTS_DIARY_UNDERSTANDING_MODE` defaults to `ocr_vlm`, and
+invalid values fail clearly. VLM provider, API key, base URL, API version, model, and timeout remain
+centralized; the API key is not added to tracked configuration. `main.py` owns
+the import-safe application entry point and run-planning contracts. The package
+`__main__.py` is a thin command-line entry point. Run planning resolves the
+input and fixed output paths without writing files. `run_pipeline` returns only
+the paths of the two final diary files after successful writing.
+The output-composition layer adds the selected mode to each file's first line;
+this run metadata is not stored in canonical models or passed to renderers.
+Changing the environment setting selects another mode without code changes.
+
+Current pipeline APIs discovered for later wiring:
+
+| Stage | Existing API / contract |
+|---|---|
+| Video metadata and sampling | `video.read_video_metadata`, `video.sample_video` |
+| Pair signals and candidate classification | `investigation_signals.estimate_investigation_presence`, `analyze_investigation_pair`; `investigation_detection.detect_investigation_candidate` |
+| Confirmation and lifecycle | `investigation_temporal.confirm_investigation_candidates`; `investigation_lifecycle.build_investigation_lifecycle` |
+| Windows, sampling and stable views | `investigation_window.build_investigation_windows`; `adaptive_sampling.build_adaptive_sampling_plan`; `ticket_stable_views.detect_ticket_stable_views` |
+| Evidence candidates and selection | `evidence_candidate_timeline.build_evidence_candidate_timeline`; `frame_materialization.materialize_evidence_candidates`; `representative_selection.select_investigation_representatives` |
+| OCR | `ticket_ocr.run_ocr_for_representatives`; then `ocr_spatial.build_spatial_observations` and `ocr_fields.extract_ocr_fields` |
+| VLM Pass 1 | Construct `vlm.VLMRequest`, call `vlm.VLMRuntime.run`, parse with `vlm_parsing.parse_vlm_result`; `gemini_api.GeminiAPIRuntime` is the current implementation |
+| Fusion and Pass 2 | `fusion.compare_field_observations`, `fusion.apply_temporal_awareness`, and `fusion.resolve_investigation`; construct `FusedInvestigationResult`; use `vlm_review.build_vlm_review_context`, `build_vlm_review_request`, and `parse_vlm_review_result` for review |
+| Record and canonical session | `investigation_record.assemble_investigation_record`; construct `VideoInvestigationResult`; `canonical_events.build_canonical_session` |
+| Diary strings | `operational_diary.render_operational_diary`; `detailed_diary.render_detailed_diary` |
+
+There is no single production function that runs all of these stages. In
+particular, fusion inputs are assembled from the field comparison and temporal
+awareness APIs; Phase 6 validation scripts demonstrate this composition. The
+canonical builder rejects a `VideoInvestigationResult` containing failed
+Investigations, preserving Phase 7's no-silent-omission contract.
+
+### Understanding-mode contract
+
+The orchestrator makes one high-level decision from `RuntimeConfig` rather than
+scattered `use_ocr`/`use_vlm` booleans. Phase 9.3 connects each mode to the same
+`InvestigationRecord` output contract, with optional fields for genuinely absent
+branch evidence:
+
+| Mode | Execution | Result contract |
+|---|---|---|
+| `ocr_only` | Selected-representative OCR and spatial field extraction. | Final fields retain OCR observations directly; visual/map fields are absent. No VLM, fusion, or Pass 2 records. |
+| `vlm_only` | Continuous temporary Investigation clip through VLM Pass 1. | Final fields retain VLM observations directly. Pass 2 is omitted because its current contract requires OCR crops and fusion context. |
+| `ocr_vlm` | OCR and VLM Pass 1, fusion, temporal awareness, then Pass 2 v3 with selected ticket crops. | Existing Phase 6 final-resolution policy and source provenance are retained. |
+
+Single-source usable values use `resolved_single_source`; ambiguous/unusable
+observations remain unresolved and unobserved fields are omitted. No fake
+fusion, agreement, conflict, or review evidence is created. Required branch
+failures become explicit `InvestigationFailure` records without mode fallback.
+Before canonicalization, the orchestrator reports each failed Investigation's
+identity, interval, mode, stage, error type and a concise sanitized reason. Any
+failure blocks canonicalization and diary writes for the video; partial diaries
+are never emitted. OCR-only also invokes the existing FR24 upper-ticket/header
+extraction and resolves its supported flight, route, time and aircraft-code
+observations alongside spatial OCR fields. Conflicting representatives remain
+unresolved. OCR-only does not derive visual route or map claims from ticket text.
+All modes continue through the same canonical and rendering path. VLM
+configuration remains centralized in `config.py`.
+
+### 9.2 Video → Investigation Pipeline — COMPLETE
+
+`main.py` applies one shared preparation path to all three understanding modes.
+It reads metadata and sampled frames, composes the existing pair-signal,
+candidate, temporal-confirmation and lifecycle APIs, then prepares each interval
+through windows, adaptive sampling, stable views, evidence candidates, physical
+frame metadata and representative selection. The typed in-memory result retains
+the original lifecycle interval/identity, window, sampling plan, stable views,
+candidate provenance, materialization metadata and selected references for
+Phase 9.3. Investigations remain separate and chronological.
+
+Frames are used transiently during signal analysis. Representative materialization
+uses a bounded operation-local resolver that closes after each Investigation;
+only scalar timing, frame-index and quality metadata survives. Intermediates are
+not written to `data/debug/` or `experiment/output/`. A valid video with no
+detected Investigations returns an empty tuple of prepared Investigations. The
+pipeline fails explicitly on invalid metadata, incomplete sampling or a required
+stage error. No OCR, VLM, Gemini, fusion, CanonicalSession, diary rendering or
+persistent output is part of Phase 9.2.
+
+The completed system keeps CanonicalSession in memory and persists only the
+final diary files. Historical `data/` artifacts remain untouched until full MVP
+integration is complete and validated.
+
+### Phase 9 subphases
+
+- **9.3 — COMPLETE:** connect the three modes through `VideoInvestigationResult`.
+- **9.4 — COMPLETE:** pass the mode-independent `VideoInvestigationResult`
+  unchanged to canonical construction, keep `CanonicalSession` in memory, call
+  both pure renderers, and write only the fixed UTF-8 diary files from `main.py`.
+  Failed Investigations are rejected rather than omitted.
+- **9.5 — COMPLETE:** The production entry point processed
+  `investigation_switch_test.mp4` in all three modes. Successful VLM runs
+  returned `gemini-3.6-flash`; VLM-only made two Pass 1 requests, combined made
+  two Pass 1 and two Pass 2 requests, and OCR-only made none. Combined mode
+  remains the default. It added route/visual context and retained unresolved
+  values conservatively, but did not recover all visible ticket text. OCR-only
+  omitted many small fields; a focused refinement now connects existing
+  upper-ticket extraction to its resolver. VLM-only produced confident errors on the
+  second Investigation. Earlier VLM-only attempts had transient HTTP 503
+  responses before a complete run succeeded. Successful run durations were
+  approximately 42.6 s, 68.2 s, and 123.0 s, respectively. Detailed comparison
+  and provider results are in
+  `data/validation/phase9_5/phase9_5_validation_report.md`.
+
+The final output contract remains the two fixed files under `experiment/output/`;
+temporary media is cleaned after processing and comparison copies stay under the
+Phase 9.5 validation directory. This is manual representative validation, not a
+benchmark. Small-text omissions, confident VLM misreads, and unresolved visible
+fields remain Phase 10 quality work.
 
 ---
 
@@ -1408,3 +1529,31 @@ full cloud deployment
 ```
 
 These can be added later if justified by product needs.
+
+## VLM-only per-Investigation reliability
+
+The VLM-only orchestrator isolates each Investigation: a failed call is recorded
+and later intervals continue, while successful typed results remain in memory
+and are written to `experiment/output/vlm_run_results.json` with source interval,
+model/prompt provenance, parsed field statuses and values, selected evidence
+references, and separate visual-route observations. Sanitized provider
+diagnostics are retained for failed calls; raw media and credentials are never
+stored in that artifact.
+
+The Detailed and Operational Diaries merge completed and failed intervals in
+chronological order. Failed intervals display `VLM processing failed` and a
+concise reason; they contain no synthetic ticket fields. VLM-only outputs expose
+`completed`, `partial`, or `failed` status according to whether all, some, or no
+Investigations succeeded. OCR-only and combined-mode failure behavior remains
+unchanged.
+
+Gemini uses direct HTTP, so SDK retries are absent. A shared per-Investigation
+budget caps all API requests at three total, counting the initial request and a
+schema-compatibility request. Transient HTTP 429/503 and request timeouts use
+configurable exponential backoff with jitter and honor `Retry-After` or Gemini
+`retryDelay` when supplied. Explicit daily quota exhaustion and permanent
+errors stop immediately. Sanitized attempt records include timestamps,
+durations, status, model/API method, clip duration, crop count, quota metadata,
+provider message, delay, and available usage data; unidentified 429 causes are
+classified as unknown. Real-provider validation for the reliability update is
+pending, so this change alone does not complete MVP validation.

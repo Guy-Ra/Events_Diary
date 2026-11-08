@@ -133,6 +133,106 @@ class FR24TicketObservation:
     time_fields: tuple[FR24TimeFieldObservation, ...]
 
 
+@dataclass(frozen=True)
+class FR24CanonicalFieldObservation:
+    """One canonical ticket field mapped from an exact OCR observation.
+
+    This adapter retains the recognized text, original spatial evidence, and
+    physical OCR provenance. It assigns only fixed FR24 ticket roles; it does
+    not normalize, repair, or infer a field value.
+    """
+
+    field_name: str
+    status: str
+    raw_value_text: str | None
+    provenance: OCRFieldProvenance
+    evidence: tuple[SpatialOCRObservation, ...]
+    method: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the mapped observation and preserve its immutable evidence."""
+        if not isinstance(self.field_name, str) or not self.field_name.strip():
+            raise ValueError("field_name must be a nonempty string.")
+        if self.status not in ("extracted", "ambiguous"):
+            raise ValueError("status must be extracted or ambiguous.")
+        if (self.status == "extracted") != (self.raw_value_text is not None):
+            raise ValueError("Only an extracted observation may carry raw text.")
+        if not isinstance(self.provenance, OCRFieldProvenance):
+            raise TypeError("provenance must be OCRFieldProvenance.")
+        if any(not isinstance(item, SpatialOCRObservation) for item in self.evidence):
+            raise TypeError("evidence must contain SpatialOCRObservation records.")
+        if not isinstance(self.method, str) or not self.method.strip():
+            raise ValueError("method must be a nonempty string.")
+        if self.reason is not None and not isinstance(self.reason, str):
+            raise TypeError("reason must be a string or None.")
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+    @property
+    def canonical_label(self) -> str:
+        """Expose the canonical resolver key using the existing OCR naming API."""
+        return self.field_name
+
+
+def canonical_ocr_observations(
+    ticket: FR24TicketObservation,
+) -> tuple[FR24CanonicalFieldObservation, ...]:
+    """Map extracted FR24 header, route, and positioned times to diary fields.
+
+    Ambiguous supported fields remain explicit abstentions. Unavailable fields
+    are omitted. Route-side assignment follows the existing left-origin,
+    right-destination ticket convention; values remain exact OCR text.
+    """
+    if not isinstance(ticket, FR24TicketObservation):
+        raise TypeError("ticket must be FR24TicketObservation.")
+    result = []
+    upper_names = (
+        "primary_flight_id", "alternate_flight_id", "airline_name", "aircraft_code",
+        "origin_airport_code", "destination_airport_code",
+    )
+    for name in upper_names:
+        observation = ticket.upper.get(name)
+        if observation.status == "unavailable":
+            continue
+        result.append(FR24CanonicalFieldObservation(
+            name, observation.status, observation.raw_text, ticket.upper.provenance,
+            tuple(observation.evidence), observation.method, observation.reason,
+        ))
+
+    time_names = {
+        ("SCHEDULED", "left"): "origin_scheduled_time",
+        ("ACTUAL", "left"): "origin_actual_time",
+        ("SCHEDULED", "right"): "destination_scheduled_time",
+        ("ACTUAL", "right"): "destination_estimated_or_actual_time",
+        ("ESTIMATED", "right"): "destination_estimated_or_actual_time",
+    }
+    unknown_side_names = {
+        "SCHEDULED": ("origin_scheduled_time", "destination_scheduled_time"),
+        "ACTUAL": ("origin_actual_time", "destination_estimated_or_actual_time"),
+        "ESTIMATED": ("destination_estimated_or_actual_time",),
+    }
+    for positioned in ticket.time_fields:
+        field = positioned.field
+        name = time_names.get((field.canonical_label, positioned.visual_side))
+        possible_names = (name,) if name else unknown_side_names.get(field.canonical_label, ())
+        if not possible_names:
+            continue
+        evidence = [field.label_match.observation]
+        if field.selected_candidate is not None:
+            evidence.append(field.selected_candidate.observation)
+        unique_evidence = tuple({item.detection_index: item for item in evidence}.values())
+        status = "extracted" if name is not None and field.status == "extracted" else "ambiguous"
+        raw_value = field.raw_value_text if status == "extracted" else None
+        reason = field.reason if status == "ambiguous" else None
+        for canonical_name in possible_names:
+            result.append(FR24CanonicalFieldObservation(
+                canonical_name, status, raw_value, field.provenance, unique_evidence,
+                f"fr24_{positioned.visual_side}_{field.canonical_label.casefold()}_time",
+                reason or ("time_side_ambiguous" if name is None else None),
+            ))
+    return tuple(result)
+
+
 def _side(observation: SpatialOCRObservation) -> str:
     """Assign a whole source box to a crop half; crossing boxes remain unknown."""
     bounds = observation.normalized_bounds

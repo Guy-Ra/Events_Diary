@@ -85,6 +85,25 @@ def _path(name: str, value: Path) -> None:
 
 
 @dataclass(frozen=True)
+class VLMImageInput:
+    """One selected, source-timed image supplied alongside a VLM video clip."""
+
+    image_path: Path
+    source_timestamp_s: float
+    role: str
+    section: str
+
+    def __post_init__(self) -> None:
+        """Validate image provenance and its concise purpose metadata."""
+        _path("image_path", self.image_path)
+        _time("source_timestamp_s", self.source_timestamp_s)
+        for name in ("role", "section"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be nonempty text.")
+
+
+@dataclass(frozen=True)
 class VLMRequest:
     """One request containing a continuous Investigation clip, never frame inputs.
 
@@ -101,6 +120,7 @@ class VLMRequest:
     source_end_s: float
     prompt: str
     prompt_version: str = "fr24_vlm_v1"
+    ticket_images: tuple[VLMImageInput, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate identity, continuous clip bounds, and explicit prompt metadata."""
@@ -115,6 +135,10 @@ class VLMRequest:
             raise ValueError("prompt must be a nonempty string.")
         if not isinstance(self.prompt_version, str) or not self.prompt_version.strip():
             raise ValueError("prompt_version must be a nonempty string.")
+        ticket_images = tuple(self.ticket_images)
+        if any(not isinstance(image, VLMImageInput) for image in ticket_images):
+            raise TypeError("ticket_images must contain VLMImageInput records.")
+        object.__setattr__(self, "ticket_images", ticket_images)
 
 
 @dataclass(frozen=True)
@@ -140,6 +164,7 @@ class RawVLMResult:
     ttft_s: float | None = None
     generated_tokens: int | None = None
     error: str | None = None
+    provider_diagnostics_json: str | None = None
 
     def __post_init__(self) -> None:
         """Validate status, source provenance, identity and optional diagnostics."""
@@ -166,6 +191,8 @@ class RawVLMResult:
             _index("generated_tokens", self.generated_tokens)
         if self.error is not None and not isinstance(self.error, str):
             raise TypeError("error must be a string or None.")
+        if self.provider_diagnostics_json is not None and not isinstance(self.provider_diagnostics_json, str):
+            raise TypeError("provider_diagnostics_json must be a string or None.")
 
 
 @dataclass(frozen=True)

@@ -230,13 +230,29 @@ The closure report is stored at
 `data/debug/events_diary/phase_8_5/phase_8_5_validation_report.txt`.
 
 Phase 8 is `CanonicalSession` → Operational Diary string + Detailed Diary
-string. During future full-system integration, the orchestrator will select/load
-the input video, run the full pipeline, receive both strings, and write them to
+string. Phase 9 `main.py` selects/loads the input video, runs the configured
+pipeline, receives both strings, and writes them to
 `experiment/output/`. Rendering has no Phase 6 runtime dependency and does no
 inference. Empty sessions continue to return empty strings; future integration
 may decide whether to write a user-facing empty-state message. A unified VLM
 visual-route description remains backlog; historical `data/` cleanup remains
 deferred until full video-to-diary integration is validated.
+
+**Phase 9: Full System Integration & Main Orchestrator is COMPLETE.** The
+production entry point supports `ocr_only`, `vlm_only`, and `ocr_vlm`, shares
+canonical conversion and pure rendering, and writes only the two fixed diary
+files. Phase 9.5 completed real end-to-end runs of all three modes on
+`investigation_switch_test.mp4` using `gemini-3.6-flash`: successful runs made 0,
+2 Pass 1, and 2 Pass 1 + 2 Pass 2 requests, respectively. Combined mode remains
+the default. It added route/visual context but left several visible ticket
+fields unresolved; OCR-only now connects its existing upper-ticket/header
+extractor to attempt meaningful flight, route, time, aircraft and TRACK fields.
+OCR-only remains source-faithful and does not infer map/visual claims from ticket
+text. VLM-only made confident errors on Investigation 1. Transient HTTP 503 responses delayed the
+successful VLM-only run. Temporary media is cleaned. Detailed field-level
+results are in `data/validation/phase9_5/phase9_5_validation_report.md`; these
+manual results are representative, not a benchmark. Remaining recognition and
+resolution quality work is deferred to Phase 10.
 
 Canonical JSON stores null for unresolved, not-available and absent values.
 `data_quality.unresolved_fields` means relevant information could not be
@@ -308,7 +324,9 @@ not unrestricted authority.
 
 The final validated MVP model was `gemini-3.6-flash`, used throughout the
 successful complete validation dataset. Request timeout was 900 seconds, with
-at most three attempts and 503/timeout backoff of 30 seconds then 90 seconds.
+at most three attempts and 503/timeout backoff of 30 seconds then 90 seconds;
+these describe the historical Phase 6 validation configuration, superseded by
+the current VLM-only reliability policy documented below.
 `gemini-3.8-flash` was an optional fallback only for confirmed 3.6 Free Tier daily
 quota exhaustion and was not used in that dataset. Hardware-specific model
 execution profiles, alternate runtimes and optimization are deferred to post-MVP
@@ -394,10 +412,7 @@ targets. This is representative validation, not a single overall accuracy score.
 An accepted MVP limitation is that occasional low-priority small-text errors may
 remain after crop-assisted review. One AGE value was visibly 6 years while Pass 2
 returned 4 years; this is deferred to Phase 10. The former standalone route /
-direction analysis remains absorbed into Phase 6. Roadmap status: Phase 6
-COMPLETE, Phase 7 COMPLETE (7.1–7.6 COMPLETE), Phase 8 COMPLETE
-(8.1–8.5 COMPLETE), full system integration next, Phase 9 planned,
-and Phase 10 System Optimization & Improvement post-MVP.
+direction analysis remains absorbed into Phase 6. Roadmap status: Phase 6 COMPLETE, Phase 7 COMPLETE (7.1 to 7.6 COMPLETE), Phase 8 COMPLETE (8.1 to 8.5 COMPLETE), Phase 9 COMPLETE (9.1 to 9.5 COMPLETE), and Phase 10 System Optimization & Improvement NEXT / NOT STARTED.
 
 ## 16. Open Product Decisions
 
@@ -411,12 +426,11 @@ and Phase 10 System Optimization & Improvement post-MVP.
 ## Appendix A. Current Project Status
 
 Phases 0–8 are complete, including Phase 8.5 real end-to-end renderer
-validation. Full system integration is the next major task: video input,
-detection/sampling and Investigation extraction, configured understanding,
-`InvestigationRecord(s)`, `CanonicalSession`, and both diaries. Its future
-configuration must support `ocr_only`, `vlm_only`, and `ocr_vlm`, preserving
-existing VLM provider/model/endpoint/runtime settings. This integration and
-configuration have not started. Phase 10 is reserved
+validation. Phase 9 is complete: 9.1–9.4 are complete, including all three
+understanding contracts, shared canonical construction, rendering, and final
+output writing. Saved combined results and real OCR-only execution validate
+the back half without Gemini; a typed VLM-only fixture confirms OCR is not
+required. Phase 9.5 real-video validation is complete. Phase 10 is reserved
 for post-MVP optimization, including residual VLM small-text errors,
 low-priority field accuracy and AGE review, model comparison/upgrades,
 media-resolution and crop-selection improvements, prompt, latency/runtime, and
@@ -429,3 +443,25 @@ matching the same aircraft or flight across Investigations, creating revisit
 links and entity groups, and (if implemented) defining `MATCH`, `AMBIGUOUS` and
 `NO_MATCH` semantics. This capability is not required to create the Events
 Diary; each Investigation remains an independent event.
+
+### VLM-only failure isolation and partial output
+
+VLM-only processing continues after an individual Investigation failure while
+preserving successful results. Both diaries keep every detected interval in
+chronological order. Failed intervals explicitly say `VLM processing failed`
+and include a concise reason without fabricated fields or negative
+observations. Successful structured VLM observations, original-video timing,
+selected-evidence references, and sanitized failure diagnostics are retained in
+`experiment/output/vlm_run_results.json`.
+
+Overall VLM-only status is `completed` when every Investigation succeeds,
+`partial` when at least one succeeds and one fails, and `failed` when none
+succeeds. Gemini uses direct HTTP with a ceiling of three total requests per
+Investigation, including the initial request and schema-compatibility requests.
+Only HTTP 429/503 and request timeouts are retried; explicit daily quota
+exhaustion stops without retry. Exponential backoff, jitter, and provider
+`Retry-After`/`retryDelay` handling are configurable. The direct adapter has no
+SDK-level retry layer. Sanitized 429 diagnostics retain quota fields and
+provider messages when available and classify an unidentified cause as unknown.
+Real-provider reliability validation of retry and partial-output behavior is
+pending; this update does not mark the MVP reliability-validated.

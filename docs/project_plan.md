@@ -854,7 +854,8 @@ reconstruction are outside this approved change.
 The final validated model was `gemini-3.6-flash`; the successful complete
 validation dataset used this model throughout. The configured request timeout
 was 900 seconds, with up to three attempts and 503/timeout backoff of 30 seconds
-then 90 seconds. `gemini-3.8-flash` was an optional fallback only for confirmed
+then 90 seconds in that historical Phase 6 validation. The current retry policy
+is documented in the VLM-only reliability update below. `gemini-3.8-flash` was an optional fallback only for confirmed
 3.6 Free Tier daily quota exhaustion; it was not used in the successful complete
 validation dataset.
 
@@ -1063,8 +1064,8 @@ fusion, or resolution.
   output names are `experiment/output/operational_diary.txt` and
   `experiment/output/detailed_diary.txt`. `experiment/input/` and
   `experiment/output/` are the single-video MVP workspace. Generated contents
-  are ignored except tracked `.gitkeep` placeholders. Filesystem writing belongs
-  to the future full-system orchestrator, not a Phase 8 production API.
+  are ignored except tracked `.gitkeep` placeholders. Phase 9 `main.py` owns
+  final filesystem writes; Phase 8 renderer APIs remain pure string producers.
 - **8.5 Real end-to-end renderer validation and closure — COMPLETE.** The real
   Phase 7.4 `CanonicalSession` from `investigation_switch_test.mp4` was rendered
   through both production renderers. The two expected events and intervals were
@@ -1092,17 +1093,100 @@ continue to return two empty strings. Historical
 integrated and validated. A future unified VLM visual-route description remains
 backlog.
 
-**Phase 8 is COMPLETE (8.1–8.5 COMPLETE). The next major task is full system
-integration**, from video input through detection/sampling and Investigation
-extraction, configured understanding, `InvestigationRecord` creation,
-`CanonicalSession`, and both diary outputs. Future integration configuration
-must support `ocr_only`, `vlm_only`, and `ocr_vlm` while preserving existing VLM
-provider/model/endpoint/runtime configuration. This integration and its
-configuration are not implemented in Phase 8.5.
+Phase 8 is COMPLETE (8.1–8.5 COMPLETE). Phase 9 now establishes the full-system
+integration and main-orchestrator structure described below.
 
 ---
 
-# 14. Phase 10 — System Optimization & Improvement
+# 14. Phase 9 — Full System Integration & Main Orchestrator (COMPLETE)
+
+Phase 9 connects the existing deterministic and semantic processing stages to
+the Phase 7 canonical model and Phase 8 pure renderers. The MVP processes one
+supported video from `experiment/input/` and reserves fixed diary destinations
+under `experiment/output/`. `main.py` makes one centralized understanding-mode
+decision and owns final filesystem output.
+
+## 9.1 Main Orchestrator & Runtime Configuration — COMPLETE
+
+- `UnderstandingMode` is a typed setting in `config.py` with exactly the
+  `ocr_only`, `vlm_only`, and `ocr_vlm` values. `load_runtime_config()` loads
+  the project `.env` through `python-dotenv` and reads
+  `EVENTS_DIARY_UNDERSTANDING_MODE`; the default is `ocr_vlm`, and invalid
+  values raise a clear configuration error.
+- `RuntimeConfig` keeps mode, workspace paths, and existing VLM settings
+  together. Existing provider, secret, endpoint, API version, model and timeout
+  remain owned by the central VLM config loader.
+- Input selection accepts exactly one `.mp4` file in `experiment/input/`.
+  Missing or multiple videos raise explicit errors; unrelated files are ignored.
+- Run planning declares the fixed `operational_diary.txt` and
+  `detailed_diary.txt` paths without creating files. The existing Phase 8
+  renderers remain pure string producers.
+- Importing `main` or the package entry point does not execute video,
+  detection, OCR, VLM, fusion or canonical assembly stages. Processing modules
+  load only when a run is requested.
+- Phase 9.3 connects all three modes to the shared result contract. Optional
+  branch evidence is explicit; no mode creates placeholder observations.
+
+## Phase 9 subphases
+
+- **9.2 Connect Video → Investigation Pipeline — COMPLETE.** The shared path
+  runs existing video sampling, detection, temporal confirmation, lifecycle,
+  windows, adaptive sampling, stable views, evidence candidates, materialization
+  and representative selection APIs. Intermediate data remains in memory;
+  resolver/cache ownership is scoped to one Investigation and closed afterward.
+  No debug artifacts are persisted. Zero detections produce a valid empty
+  prepared result. `CanonicalSession` remains a later in-memory object, and the
+  completed system persists only final diaries. Phase 9.2 stops before
+  understanding, fusion, canonical construction or rendering.
+- **9.3 Connect Understanding Modes — COMPLETE.** The orchestrator dispatches
+  `ocr_only`, `vlm_only`, or `ocr_vlm` and returns `VideoInvestigationResult`.
+  OCR-only runs selected-representative OCR, spatial field extraction, and the
+  existing FR24 upper-ticket/header extractor so it can attempt meaningful
+  flight, route, time, aircraft and TRACK fields. Cross-representative conflicts
+  remain unresolved; visual/map fields are not inferred from ticket text. VLM-only
+  runs full continuous-clip Pass 1; combined mode preserves OCR, Pass 1, fusion,
+  temporal awareness, and Pass 2 v3 with selected ticket crops. Single-source
+  finals retain their OCR or VLM source observation directly. VLM-only omits
+  Pass 2 because its existing contract needs OCR crops and fusion context.
+  Failures are explicit per Investigation and are logged with interval, mode,
+  failed stage, error type and a concise sanitized reason before canonicalization.
+  Any failure blocks diary generation for the video; no partial diary or mode
+  fallback is produced. Zero detections return a valid empty result, and temporary
+  VLM media is removed after processing. All mode outputs
+  remain in memory and no output files are written.
+- **9.4 Connect Canonical + Rendering + Output — COMPLETE.** `main.py` consumes
+  the mode-independent `VideoInvestigationResult`, builds an in-memory
+  `CanonicalSession`, calls both pure Phase 8 string renderers, and writes only
+  the fixed UTF-8 diary files under `experiment/output/`. Failed Investigations
+  are passed through unchanged and rejected rather than silently omitted.
+  Both files start with the human-readable mode label, a blank line, and the
+  unchanged renderer body; empty bodies contain only the mode line. Switching
+  modes requires configuration changes only.
+- **9.5 Real Video End-to-End Validation — COMPLETE.** The production entry
+  point processed `investigation_switch_test.mp4` in three separate runs.
+  Successful VLM runs returned `gemini-3.6-flash`: OCR-only made zero provider
+  requests, VLM-only made two Pass 1 requests, and combined mode made two Pass 1
+  plus two Pass 2 requests. Combined mode remains the configured default. It
+  added route and visual context but left visibly available fields unresolved.
+  OCR-only omitted many small ticket fields; the subsequent focused refinement
+  connects existing upper-ticket extraction to single-source resolution. VLM-only made multiple confident
+  errors on Investigation 1. Earlier VLM-only attempts received transient HTTP
+  503 responses before a fresh complete run succeeded. Temporary media was
+  cleaned and ordinary output remained the two fixed diary files. This is
+  representative validation, not a benchmark. Detailed field comparison and
+  request outcomes are in
+  `data/validation/phase9_5/phase9_5_validation_report.md`.
+
+Phase 9.5 completed the full real-video mode comparison; see the validation
+report for field-level results, request outcomes, and representative quality
+limitations deferred to Phase 10. `CanonicalSession` is never persisted, and
+normal execution writes only the two final diary files. Validation copies and
+request diagnostics are kept under the Phase 9.5 directory; no global `data/`
+cleanup was performed.
+
+---
+
+# 15. Phase 10 — System Optimization & Improvement (NEXT; NOT STARTED)
 
 Phase 10 is a dedicated post-MVP phase for improving the complete system using
 empirical evidence from end-to-end operation. It starts only after Phases 0–9
@@ -1172,8 +1256,8 @@ together without rewriting them.
 - Phase 6 — COMPLETE.
 - Phase 7 — COMPLETE (7.1–7.6 COMPLETE).
 - Phase 8 — COMPLETE (8.1–8.5 COMPLETE).
-- Phase 9 — planned.
-- Phase 10 — System Optimization & Improvement, post-MVP.
+- Phase 9 — COMPLETE (9.1–9.5 COMPLETE).
+- Phase 10 — System Optimization & Improvement (NEXT; NOT STARTED).
 
 The former standalone route-analysis phase remains absorbed into Phase 6.
 
@@ -1226,3 +1310,25 @@ ruff
 ```
 
 The project should remain intentionally lean as implementation begins.
+
+## VLM-only reliability update — IMPLEMENTED, REAL-PROVIDER VALIDATION PENDING
+
+VLM-only processing now isolates per-Investigation failures, continues with
+later intervals, preserves successful structured observations and provenance,
+and renders every successful or failed interval chronologically. Failed
+intervals are explicitly marked `VLM processing failed`; no ticket values are
+fabricated. Overall status is `completed`, `partial`, or `failed`. A structured
+`experiment/output/vlm_run_results.json` artifact retains successful parsed
+fields and separate map/route claims alongside sanitized per-attempt diagnostics
+for failures.
+
+The Gemini adapter uses direct HTTP without SDK retries and enforces at most
+three total requests per Investigation. HTTP 429/503 and timeouts are retried
+with configurable exponential backoff and jitter, honoring provider retry-delay
+metadata. Explicit daily quota exhaustion is not retried. Diagnostics preserve
+provider code/status/message, quota metric/id/limit/dimensions, retry delay,
+model/method, Investigation identity, request timing, clip duration, crop count,
+and available token usage, with unknown used when a 429 gives no supported
+cause. Deterministic tests and static checks are required; real-provider
+reliability validation remains pending. Phase 10 and the approved architecture
+are otherwise unchanged.

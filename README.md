@@ -38,7 +38,7 @@ OCR evidence, VLM Pass 1 evidence and fusion/context information in one Gemini
 request. The video provides temporal and map/route context; crops support precise
 small-text ticket reading. No image-only request or Pass 3 exists. The final
 validated model was `gemini-3.6-flash` throughout the successful complete
-validation dataset. Timeout was 900 seconds with up to three attempts and
+validation dataset. That validation used a 900-second timeout and its then-current
 503/timeout backoff of 30 seconds then 90 seconds. `gemini-3.8-flash` was an
 optional fallback only for confirmed 3.6 Free Tier daily quota exhaustion and
 was not used in that dataset.
@@ -53,10 +53,7 @@ Known limitation: occasional low-priority small-text errors may remain after
 crop-assisted review. In one Investigation AGE was visibly 6 years while Pass 2
 returned 4 years. This is accepted for MVP and deferred to Phase 10.
 
-**Roadmap:** Phase 6 COMPLETE; Phase 7 COMPLETE (7.1–7.6 COMPLETE); Phase 8
-COMPLETE (8.1–8.5 COMPLETE); full system integration is next; Phase 9 planned; Phase 10 System
-Optimization & Improvement is post-MVP. The former standalone route-analysis
-phase remains absorbed into Phase 6.
+**Roadmap:** Phases 6 through 9 are COMPLETE, including Phase 9.5 real end-to-end validation. Phase 10 System Optimization & Improvement is NEXT / NOT STARTED. The former standalone route-analysis phase remains absorbed into Phase 6.
 
 **Phase 7 — Canonical Event Data & Events Diary Foundation is COMPLETE.**
 Phase 7.1 field selection, Phase 7.2 (`CanonicalEvent` and
@@ -75,26 +72,33 @@ single-video workspace conventions; it does not add a production file writer.
 Phase 8 renderers return deterministic UTF-8-safe strings:
 `CanonicalSession → render_operational_diary(session) -> str` and
 `render_detailed_diary(session) -> str`. They make no inference and have no
-Phase 6 runtime dependency. The future orchestrator will select/load the input
-video, run the full pipeline, receive both strings, and write them to
+Phase 6 runtime dependency. `main.py` selects the input, runs the configured
+pipeline, receives both strings, and writes them to
 `experiment/output/operational_diary.txt` and
 `experiment/output/detailed_diary.txt`. Empty sessions continue to render as
 empty strings. The single-video MVP workspace uses `experiment/input/` and
 `experiment/output/`; generated contents remain ignored and `.gitkeep`
 placeholders remain trackable.
-Historical `data/` artifacts remain until full-pipeline integration is validated
-and a deliberate cleanup is performed. Phase 8.5 real-data validation is
-complete. The next major task is full system integration from video input
-through detection, sampling, Investigation extraction, configured understanding,
-CanonicalSession, and both diaries. Integration configuration must support
-`ocr_only`, `vlm_only`, and `ocr_vlm` while preserving existing VLM
-provider/model/endpoint/runtime settings. This work has not started. A unified
-VLM visual-route description remains future backlog.
-One Phase 6
-`InvestigationRecord` becomes
-one chronologically ordered canonical event, with no merging or revisit
-inference. `CanonicalSession` JSON will be the source of truth for future
-deterministic operational and detailed diary renderers.
+Phase 9 full-system integration and real end-to-end validation are COMPLETE. All three modes were run through the production entry point; detailed comparisons and request diagnostics are recorded in `data/validation/phase9_5/phase9_5_validation_report.md`. Phase 10 is reserved for quality improvements identified by that representative validation.
+
+**Phase 9: Full System Integration & Main Orchestrator is COMPLETE.**
+The production entry point runs the configured `ocr_only`, `vlm_only`, or
+`ocr_vlm` path through canonical conversion and the two pure diary renderers.
+Phase 9.5 validated all three modes on `investigation_switch_test.mp4` with
+`gemini-3.6-flash`: OCR-only made zero Gemini requests, VLM-only made two Pass 1
+requests, and combined mode made two Pass 1 plus two Pass 2 requests. Combined
+mode remains the MVP default. It added route/visual context and retained
+unresolved values conservatively; OCR-only's focused refinement now connects
+existing upper-ticket extraction so it attempts meaningful flight, route, time,
+aircraft and TRACK fields. It remains source-faithful and does not infer visual
+map claims from ticket text. Failed Investigations are reported with safe
+per-Investigation diagnostics before canonicalization and prevent all diary
+writes for that video. VLM-only made confident errors on Investigation 1. Earlier VLM-only attempts
+received transient HTTP 503 responses, followed by a successful full run. The
+runs preserve the two fixed output files and clean temporary media. These are
+representative manual results, not a benchmark; further quality work is deferred
+to Phase 10. See the detailed comparison at
+[`data/validation/phase9_5/phase9_5_validation_report.md`](data/validation/phase9_5/phase9_5_validation_report.md).
 
 See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
 Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,
@@ -205,3 +209,23 @@ Plan
 ```
 
 The goal is to keep the implementation modular, testable, and evidence-driven without introducing unnecessary abstractions.
+
+## VLM-only reliability and partial runs
+
+VLM-only processing continues after an individual Investigation failure while
+preserving successful results. Both diaries keep failed intervals in
+chronological position with an explicit `VLM processing failed` marker and a
+concise reason. No values are invented for failed Investigations. Overall status
+is `completed` when all succeed, `partial` when successes and failures coexist,
+and `failed` when none succeeds. Successful structured fields, provenance,
+selected evidence references, and sanitized failure diagnostics are retained in
+`experiment/output/vlm_run_results.json`.
+
+Gemini uses direct HTTP without SDK retries and makes at most three total
+requests per Investigation, including the initial call and schema-compatibility
+calls. Only HTTP 429/503 and request timeouts are retried; explicit daily quota
+exhaustion stops immediately. Configurable exponential backoff with jitter
+honors provider `Retry-After`/`retryDelay` metadata. A 429 without explanatory
+metadata is classified as unknown. Real-provider reliability validation of
+these rules remains pending; the MVP is not fully reliability-validated until
+that validation succeeds.

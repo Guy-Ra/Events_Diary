@@ -1,6 +1,7 @@
 """FR24 header/route semantics, conservative abstention and lower-field preservation."""
 
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from events_diary.ocr_fields import extract_ocr_fields
 from events_diary.ocr_upper_ticket import (
     AIRPORT_FIELDS,
     HEADER_FIELDS,
+    canonical_ocr_observations,
     extract_fr24_ticket,
     extract_fr24_tickets_batch,
     extract_fr24_upper_ticket,
@@ -56,6 +58,47 @@ def test_real_shaped_header_route_raw_values_and_provenance():
     assert [f.visual_side for f in output.time_fields] == ["left", "right", "left", "right"]
     assert [f.route_role for f in output.time_fields] == ["origin", "destination", "origin", "destination"]
     assert [f.field.raw_value_text for f in output.time_fields] == ["2:30 pM", "8:45 AM", "4:49 pM", "9:31 AM"]
+
+
+def test_canonical_projection_keeps_header_route_and_each_side_time_separate():
+    from events_diary.fusion import resolve_single_source_investigation
+
+    ticket = extract_fr24_ticket(record(HEADER + ROUTE))
+    observations = canonical_ocr_observations(ticket)
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=Path("source.mp4"),
+        start_time_s=0.0, end_time_s=1.0, observations=observations,
+    )
+
+    assert final.fields["primary_flight_id"].final_value == "ISR972"
+    assert final.fields["alternate_flight_id"].final_value == "6H972"
+    assert final.fields["airline_name"].final_value == "Israir Airlines"
+    assert final.fields["origin_airport_code"].final_value == "JFK"
+    assert final.fields["destination_airport_code"].final_value == "TLV"
+    assert final.fields["origin_scheduled_time"].final_value == "2:30 PM"
+    assert final.fields["origin_actual_time"].final_value == "4:49 PM"
+    assert final.fields["destination_scheduled_time"].final_value == "8:45 AM"
+    assert final.fields["destination_estimated_or_actual_time"].final_value == "9:31 AM"
+    assert not any("visual_" in name for name in final.fields)
+
+
+def test_conflicting_upper_ticket_values_remain_unresolved_across_representatives():
+    from events_diary.fusion import resolve_single_source_investigation
+
+    first = canonical_ocr_observations(extract_fr24_ticket(record(HEADER + ROUTE, candidate=0)))
+    changed = tuple(
+        ("MEA251", (8, 29, 66, 18)) if text == "ISR972" else (text, box)
+        for text, box in HEADER + ROUTE
+    )
+    second = canonical_ocr_observations(extract_fr24_ticket(record(changed, candidate=1)))
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=Path("source.mp4"),
+        start_time_s=0.0, end_time_s=1.0, observations=(*first, *second),
+    )
+
+    assert final.fields["primary_flight_id"].final_status == "unresolved"
+    assert final.fields["primary_flight_id"].final_value is None
+    assert "conflicting" in final.fields["primary_flight_id"].resolution_reason
 
 
 @pytest.mark.parametrize("scale,x,y", [(1, 16, 121), (2, 32, 242), (.5, 0, 0), (1, 200, 600)])

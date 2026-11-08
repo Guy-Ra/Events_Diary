@@ -8,9 +8,14 @@ and provider diagnostics; semantic interpretation remains in ``vlm_parsing``.
 
 import base64
 import json
+import logging
+import math
+import random
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -27,6 +32,8 @@ from events_diary.vlm_review import VLMReviewRequest
 
 GEMINI_API_KEY_ENV = "EVENTS_DIARY_VLM_API_KEY"
 MAX_INLINE_VIDEO_BYTES = 20 * 1024 * 1024
+MAX_REQUEST_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
 
 
 def _response_schema() -> dict[str, Any]:
@@ -136,28 +143,104 @@ class GeminiAPIRuntime(VLMRuntime):
         payload = self._video_payload(
             request, video_bytes, generation_config, include_schema=schema_used,
         )
-        status_code, response_bytes, transport_error = self._post(payload, key)
+        attempts: list[dict[str, Any]] = []
+
+        def post_with_retry(current_payload: dict[str, Any]):
+            """Retry classified transient failures without exceeding the request budget."""
+            while True:
+                attempt_number = len(attempts) + 1
+                requested_at = datetime.now(timezone.utc).isoformat()
+                request_started = time.perf_counter()
+                logger.info(
+                    "Gemini Investigation %s Attempt %s/%s.", request.investigation_index,
+                    attempt_number, min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS),
+                )
+                response = self._post(current_payload, key)
+                status, body, transport, headers = response
+                elapsed = time.perf_counter() - request_started
+                provider = self._provider_error_details(body, key)
+                daily_exhausted = self._daily_quota_exhausted(provider)
+                retryable = (
+                    not daily_exhausted
+                    and (status in (429, 503) or (transport is not None and transport[0] == "timeout"))
+                )
+                retry_after = self._retry_after_seconds(headers, provider)
+                delay = None
+                if retryable and attempt_number < min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS):
+                    exponential = min(
+                        self.settings.retry_base_delay_s * (2 ** (attempt_number - 1)),
+                        self.settings.retry_max_delay_s,
+                    )
+                    delay = max(exponential, retry_after or 0.0) + random.uniform(
+                        0.0, self.settings.retry_jitter_s,
+                    )
+                attempts.append({
+                    "attempt": attempt_number,
+                    "request_timestamp_utc": requested_at,
+                    "duration_s": round(elapsed, 3),
+                    "http_status": status,
+                    "transport_error": transport[0] if transport else None,
+                    "provider_error": provider,
+                    "retryable": retryable,
+                    "retry_delay_s": round(delay, 3) if delay is not None else None,
+                })
+                if status != 200 or transport is not None:
+                    logger.warning(
+                        "Gemini Investigation %s attempt %s/%s failed: HTTP %s / %s; elapsed %.3f s; retryable=%s.",
+                        request.investigation_index, attempt_number,
+                        min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS), status,
+                        provider.get("classification", transport[0] if transport else "unknown"),
+                        elapsed, retryable,
+                    )
+                if delay is None:
+                    return response
+                logger.warning(
+                    "Gemini request failed for Investigation %s (HTTP %s, %s); retrying attempt %s/%s after %.2f s.",
+                    request.investigation_index, status, provider.get("classification", "unknown"),
+                    attempt_number + 1, min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS), delay,
+                )
+                time.sleep(delay)
+
+        status_code, response_bytes, transport_error, _ = post_with_retry(payload)
         schema_rejected = False
-        if schema_used and status_code == 400 and self._is_schema_rejection(response_bytes):
+        if (schema_used and status_code == 400 and self._is_schema_rejection(response_bytes)
+                and len(attempts) < min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS)):
             schema_rejected = True
             schema_used = False
             payload = self._video_payload(request, video_bytes, generation_config, include_schema=False)
-            status_code, response_bytes, transport_error = self._post(payload, key)
+            status_code, response_bytes, transport_error, _ = post_with_retry(payload)
         elapsed = time.perf_counter() - started
+        diagnostics_payload = self._request_diagnostics(
+            request, attempts, elapsed, response_bytes, key,
+        )
         if transport_error is not None:
             status, error = transport_error
             return self._failed(request, status, started, error, elapsed=elapsed,
                 response_schema_used=schema_used, response_schema_rejected=schema_rejected,
-                generation_config=generation_config)
+                generation_config=generation_config, provider_diagnostics_json=diagnostics_payload)
         if status_code != 200:
             safe_response = self._sanitize_provider_error(response_bytes, key)
-            return self._failed(request, "runtime_error", started, f"Gemini API returned HTTP {status_code}.",
+            provider = self._provider_error_details(response_bytes, key)
+            reason = provider.get("message") or provider.get("status") or "provider error"
+            safe_reason = " ".join(str(reason).split())[:240]
+            error = f"Gemini API returned HTTP {status_code} — {safe_reason}."
+            return self._failed(request, "runtime_error", started, error,
                 elapsed=elapsed, response_schema_used=schema_used,
                 response_schema_rejected=schema_rejected, generation_config=generation_config,
-                provider_response_json=safe_response)
-        return self._result_from_response(
+                provider_response_json=safe_response, provider_diagnostics_json=diagnostics_payload)
+        logger.info(
+            "Gemini request succeeded for Investigation %s on attempt %s/%s.",
+            request.investigation_index, len(attempts),
+            min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS),
+        )
+        result = self._result_from_response(
             request, response_bytes, elapsed, generation_config,
             schema_used=schema_used, schema_rejected=schema_rejected,
+        )
+        from dataclasses import replace
+        return GeminiRunResult(
+            replace(result.raw_result, provider_diagnostics_json=diagnostics_payload),
+            result.diagnostics,
         )
 
     def _video_payload(
@@ -171,26 +254,26 @@ class GeminiAPIRuntime(VLMRuntime):
         parts: list[dict[str, Any]] = [
             {"inlineData": {"mimeType": "video/mp4", "data": base64.b64encode(video_bytes).decode("ascii")}},
         ]
-        if isinstance(request, VLMReviewRequest):
-            for index, image in enumerate(request.ticket_images, start=1):
-                try:
-                    image_bytes = image.image_path.read_bytes()
-                except OSError as error:
-                    raise ValueError(f"Selected ticket detail image {index} could not be read.") from error
-                if not image_bytes:
-                    raise ValueError(f"Selected ticket detail image {index} is empty.")
-                parts.append({"text": (
-                    f"Ticket detail image {index}; source video time "
-                    f"{image.source_timestamp_s:.3f}s; role={image.role}; section={image.section}."
-                )})
-                parts.append({"inlineData": {"mimeType": "image/png", "data": base64.b64encode(image_bytes).decode("ascii")}})
+        for index, image in enumerate(request.ticket_images, start=1):
+            try:
+                image_bytes = image.image_path.read_bytes()
+            except OSError as error:
+                raise ValueError(f"Selected ticket image {index} could not be read.") from error
+            if not image_bytes:
+                raise ValueError(f"Selected ticket image {index} is empty.")
+            image_label = "Ticket detail image" if isinstance(request, VLMReviewRequest) else "Ticket image"
+            parts.append({"text": (
+                f"{image_label} {index}; source video time "
+                f"{image.source_timestamp_s:.3f}s; role={image.role}; section={image.section}."
+            )})
+            parts.append({"inlineData": {"mimeType": "image/png", "data": base64.b64encode(image_bytes).decode("ascii")}})
         parts.append({"text": request.prompt})
         return {
             "contents": [{"parts": parts}],
             "generationConfig": config,
         }
 
-    def _post(self, payload: dict[str, Any], key: str) -> tuple[int | None, bytes, tuple[str, str] | None]:
+    def _post(self, payload: dict[str, Any], key: str):
         """POST JSON to Gemini without logging or returning the secret header."""
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         request = Request(self.endpoint_url, data=body, headers={
@@ -200,17 +283,152 @@ class GeminiAPIRuntime(VLMRuntime):
         }, method="POST")
         try:
             with urlopen(request, timeout=self.request_timeout_s) as response:
-                return response.status, response.read(), None
+                headers = getattr(response, "headers", {}) or {}
+                return response.status, response.read(), None, dict(headers.items())
         except HTTPError as error:
-            return error.code, error.read(), None
+            return error.code, error.read(), None, dict(error.headers.items()) if error.headers else {}
         except (TimeoutError, URLError) as error:
             if isinstance(error, TimeoutError) or (
                 isinstance(error, URLError) and isinstance(error.reason, TimeoutError)
             ):
-                return None, b"", ("timeout", "Gemini API request timed out.")
-            return None, b"", ("runtime_error", "Gemini API request failed due to a network error.")
+                return None, b"", ("timeout", "Gemini API request timed out."), {}
+            return None, b"", ("runtime_error", "Gemini API request failed due to a network error."), {}
         except (OSError, HTTPException):
-            return None, b"", ("runtime_error", "Gemini API request failed due to an I/O or HTTP error.")
+            return None, b"", ("runtime_error", "Gemini API request failed due to an I/O or HTTP error."), {}
+
+    def _provider_error_details(self, response_bytes: bytes, api_key: str) -> dict[str, Any]:
+        """Extract sanitized Gemini error, quota, delay, and usage metadata."""
+        try:
+            body = json.loads(self._sanitize_provider_error(response_bytes, api_key))
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+        error = body.get("error", {}) if isinstance(body, dict) else {}
+        error = error if isinstance(error, dict) else {}
+        details = error.get("details", [])
+        details = details if isinstance(details, list) else []
+        all_dicts = []
+        def visit(value):
+            if isinstance(value, dict):
+                all_dicts.append(value)
+                for nested in value.values():
+                    visit(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested)
+        visit(error)
+        def find(names):
+            return next((item[name] for item in all_dicts for name in names if name in item), None)
+        quota_metric = find(("quotaMetric", "quota_metric"))
+        quota_id = find(("quotaId", "quota_id"))
+        quota_limit = find(("quotaValue", "quotaLimit", "quota_limit"))
+        dimensions = find(("quotaDimensions", "quota_dimensions"))
+        retry_delay = find(("retryDelay", "retry_delay"))
+        if retry_delay is None:
+            for item in details:
+                if isinstance(item, dict) and item.get("@type", "").endswith("RetryInfo"):
+                    retry_delay = item.get("retryDelay")
+                    break
+        message = error.get("message")
+        provider_status = error.get("status")
+        classification = self._quota_classification(quota_metric, quota_id, dimensions, message)
+        result = {
+            "provider_code": error.get("code"),
+            "provider_status": provider_status,
+            "message": message if isinstance(message, str) else None,
+            "quota_metric": quota_metric,
+            "quota_id": quota_id,
+            "quota_limit": quota_limit,
+            "quota_dimensions": dimensions,
+            "retry_delay": retry_delay,
+            "classification": classification,
+            "usage_metadata": body.get("usageMetadata") if isinstance(body, dict) else None,
+        }
+        if error:
+            result["sanitized_error"] = self._sanitize_provider_error(response_bytes, api_key)
+        return result
+
+    @staticmethod
+    def _quota_classification(metric, quota_id, dimensions, message) -> str:
+        """Classify quota failures only when provider metadata supports it."""
+        text = " ".join(str(value) for value in (metric, quota_id, dimensions, message) if value).casefold()
+        if any(term in text for term in ("tokenperday", "tokens_per_day", "tpd")):
+            return "TPD/daily_token_limit"
+        if any(term in text for term in ("perday", "per_day", "daily", "per day", "rpd")):
+            return "RPD/daily_quota"
+        if any(term in text for term in ("tokenperminute", "tokens_per_minute", "tpm")):
+            return "TPM"
+        if any(term in text for term in ("requestperminute", "requests_per_minute", "rpm")):
+            return "RPM"
+        if any(term in text for term in ("capacity", "overloaded", "unavailable")):
+            return "provider_capacity"
+        return "unknown"
+
+    @staticmethod
+    def _daily_quota_exhausted(provider: dict[str, Any]) -> bool:
+        """Stop retrying when explicit quota metadata identifies a daily limit."""
+        if provider.get("classification") in ("RPD/daily_quota", "TPD/daily_token_limit"):
+            return True
+        status = str(provider.get("provider_status", "")).casefold()
+        message = str(provider.get("message", "")).casefold()
+        return status == "resource_exhausted" and any(
+            term in message for term in ("per day", "daily quota", "requests per day", "daily limit")
+        )
+
+    @staticmethod
+    def _retry_after_seconds(headers: dict[str, str], provider: dict[str, Any]) -> float | None:
+        """Read Retry-After or Gemini RetryInfo metadata when supplied."""
+        value = next((v for k, v in headers.items() if k.casefold() == "retry-after"), None)
+        header_delay = None
+        if value is not None:
+            try:
+                parsed = float(value)
+                if math.isfinite(parsed):
+                    header_delay = max(0.0, parsed)
+            except ValueError:
+                try:
+                    moment = parsedate_to_datetime(value)
+                    if moment.tzinfo is None:
+                        moment = moment.replace(tzinfo=timezone.utc)
+                    header_delay = max(0.0, (moment - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        value = provider.get("retry_delay")
+        provider_delay = None
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value)):
+            provider_delay = max(0.0, float(value))
+        elif isinstance(value, str):
+            match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)s\s*", value)
+            if match:
+                provider_delay = float(match.group(1))
+        delays = [delay for delay in (header_delay, provider_delay) if delay is not None]
+        return max(delays) if delays else None
+
+    def _request_diagnostics(self, request, attempts, elapsed, final_body, api_key) -> str:
+        """Serialize non-secret attempt, request-shape, and final provider diagnostics."""
+        final_provider = self._provider_error_details(final_body, api_key) if final_body else None
+        if final_provider and not any(final_provider.get(key) for key in (
+            "provider_code", "provider_status", "message", "sanitized_error",
+        )):
+            final_provider = None
+        payload = {
+            "provider": "gemini",
+            "model": self.model_name,
+            "api_method": "models.generateContent",
+            "investigation_id": request.investigation_index,
+            "request_timestamp_utc": attempts[0]["request_timestamp_utc"] if attempts else None,
+            "video_clip_duration_s": round(request.source_end_s - request.source_start_s, 3),
+            "image_crop_count": len(request.ticket_images),
+            "max_attempts": min(self.settings.max_attempts, MAX_REQUEST_ATTEMPTS),
+            "attempt_count": len(attempts),
+            "total_api_request_s": round(sum(item["duration_s"] for item in attempts), 3),
+            "total_backoff_s": round(sum(item["retry_delay_s"] or 0 for item in attempts), 3),
+            "total_elapsed_s": round(elapsed, 3),
+            "attempts": attempts,
+            "final_provider_error": final_provider,
+            "sdk_retries_enabled": False,
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _result_from_response(
         self, request: VLMRequest | VLMReviewRequest, response_bytes: bytes,
@@ -341,6 +559,7 @@ class GeminiAPIRuntime(VLMRuntime):
         self, request: VLMRequest | VLMReviewRequest, status: ExecutionStatus,
         elapsed: float, *, raw_text: str | None = None,
         generated_tokens: int | None = None, model_version: str | None = None, error: str | None = None,
+        provider_diagnostics_json: str | None = None,
     ) -> RawVLMResult:
         """Build the existing raw VLM contract without storing provider secrets."""
         return RawVLMResult(
@@ -350,6 +569,7 @@ class GeminiAPIRuntime(VLMRuntime):
             model_name=self.model_name, model_revision=model_version, prompt_version=request.prompt_version,
             raw_text=raw_text, inference_time_s=elapsed, ttft_s=None,
             generated_tokens=generated_tokens, error=error,
+            provider_diagnostics_json=provider_diagnostics_json,
         )
 
     def _failed(
@@ -358,10 +578,14 @@ class GeminiAPIRuntime(VLMRuntime):
         elapsed: float | None = None, provider_response_json: str | None = None,
         generation_config: dict[str, Any] | None = None, response_schema_used: bool = False,
         response_schema_rejected: bool = False,
+        provider_diagnostics_json: str | None = None,
     ) -> GeminiRunResult:
         """Represent an expected request failure and preserve safe diagnostics."""
         duration = time.perf_counter() - started if elapsed is None else elapsed
-        raw = self._make_raw(request, status, duration, error=error)
+        raw = self._make_raw(
+            request, status, duration, error=error,
+            provider_diagnostics_json=provider_diagnostics_json,
+        )
         diagnostics = GeminiRunDiagnostics(
             provider_response_json=provider_response_json, model_version=None,
             prompt_token_count=None, candidate_token_count=None, total_token_count=None,

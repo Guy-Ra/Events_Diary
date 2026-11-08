@@ -8,6 +8,7 @@ truth table. A separate temporal layer marks unaligned dynamic-field conflicts.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from numbers import Real
@@ -16,7 +17,12 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from events_diary.ocr_fields import OCRFieldObservation
-from events_diary.track_direction import DirectionConsistency
+from events_diary.ocr_upper_ticket import FR24CanonicalFieldObservation
+from events_diary.track_direction import (
+    DirectionConsistency,
+    compare_track_direction,
+    derive_track_direction,
+)
 from events_diary.vlm import VLMFieldObservation
 
 if TYPE_CHECKING:
@@ -113,12 +119,28 @@ def _clean_whitespace(value: str) -> str:
     return " ".join(value.split())
 
 
+_CLOCK_TIME_PATTERN = re.compile(
+    r"(?i)(1[0-2]|0?[1-9])\s*[:.]\s*([0-5]\d)\s*([ap])\s*m\.?"
+)
+
+
+def _normalize_clock_time(value: str) -> str:
+    """Normalize a clearly formatted 12-hour ticket time, otherwise retain text."""
+    cleaned = _clean_whitespace(value)
+    match = _CLOCK_TIME_PATTERN.fullmatch(cleaned)
+    if match is None:
+        return cleaned
+    hour, minute, meridiem = match.groups()
+    return f"{int(hour)}:{minute} {meridiem.upper()}M"
+
+
 def normalize_field_value(field_name: str, raw_value: str | bool | None) -> str | bool | None:
     """Return a deterministic comparison form without changing source evidence.
 
     Identifiers are uppercased, track values lose degree-symbol formatting,
-    explicit boolean strings become booleans, and other strings receive only
-    whitespace cleanup. Unknown fields follow that same conservative text rule.
+    explicit boolean strings become booleans, and ticket time fields normalize
+    only clearly formatted 12-hour clock values. Other strings receive only
+    whitespace cleanup. Unknown fields follow that conservative text rule.
     """
     if not isinstance(field_name, str) or not field_name.strip():
         raise ValueError("field_name must be a nonempty string.")
@@ -139,6 +161,8 @@ def normalize_field_value(field_name: str, raw_value: str | bool | None) -> str 
         return cleaned.upper()
     if field_name in HEADING_FIELDS:
         return _clean_whitespace(cleaned.replace("ֲ°", "").replace("°", ""))
+    if field_name in TIME_FIELDS:
+        return _normalize_clock_time(cleaned)
     return cleaned
 
 
@@ -396,10 +420,11 @@ class FinalFieldResult:
     field_name: str
     final_status: Literal["resolved", "resolved_single_source", "unresolved", "not_available"]
     final_value: str | bool | None
-    fused_observation: FusedFieldObservation
+    fused_observation: FusedFieldObservation | None
     vlm_review_observation: VLMReviewObservation | None
     resolution_reason: str
     temporal_status: str | None = None
+    source_observation: OCRFieldObservation | VLMFieldObservation | FR24CanonicalFieldObservation | None = None
 
     def __post_init__(self) -> None:
         """Validate final status, value, provenance links, and concise reason."""
@@ -415,9 +440,23 @@ class FinalFieldResult:
             raise ValueError("unresolved and not_available results must have no final_value.")
         if self.final_status in ("resolved", "resolved_single_source") and self.final_value is None:
             raise ValueError("resolved results must have a final_value.")
-        if not isinstance(self.fused_observation, FusedFieldObservation):
-            raise TypeError("fused_observation must be FusedFieldObservation.")
-        if self.field_name != self.fused_observation.field_name:
+        if self.fused_observation is not None and not isinstance(
+            self.fused_observation, FusedFieldObservation
+        ):
+            raise TypeError("fused_observation must be FusedFieldObservation or None.")
+        if self.source_observation is not None and not isinstance(
+            self.source_observation,
+            (OCRFieldObservation, VLMFieldObservation, FR24CanonicalFieldObservation),
+        ):
+            raise TypeError("source_observation must be a recognized single-source observation or None.")
+        if (self.fused_observation is None) == (self.source_observation is None):
+            raise ValueError("A final field must retain exactly one fused or single-source observation.")
+        if self.field_name != (
+            self.fused_observation.field_name if self.fused_observation is not None
+            else self.source_observation.canonical_label
+            if isinstance(self.source_observation, (OCRFieldObservation, FR24CanonicalFieldObservation))
+            else self.source_observation.field_name
+        ):
             raise ValueError("field_name must match fused_observation.field_name.")
         if self.vlm_review_observation is not None and not isinstance(
             self.vlm_review_observation, VLMReviewObservation
@@ -639,4 +678,143 @@ def resolve_investigation(
         summary=summary,
         diagnostics=diagnostics,
         direction_consistency=(review_result.direction_consistency if review_result else None),
+    )
+
+
+def resolve_single_source_investigation(
+    *, investigation_id: int, source_video: Path, start_time_s: float, end_time_s: float,
+    observations: tuple[OCRFieldObservation | VLMFieldObservation | FR24CanonicalFieldObservation, ...],
+) -> FinalInvestigationResult:
+    """Resolve observed fields from one source without creating fusion evidence.
+
+    Usable observations become ``resolved_single_source``. Explicitly ambiguous
+    or unavailable observations remain unresolved; OCR's calibrated non-text
+    fields are not available. Fields with no source observation are omitted.
+    Repeated OCR values resolve only when their normalized values agree;
+    disagreement stays unresolved, while agreeing evidence retains the latest
+    physical observation as provenance.
+    """
+    from events_diary.ocr_upper_ticket import FR24CanonicalFieldObservation
+    from events_diary.vlm import VLMFieldObservation
+
+    grouped: dict[str, list[OCRFieldObservation | FR24CanonicalFieldObservation | VLMFieldObservation]] = {}
+    for observation in observations:
+        if isinstance(observation, (OCRFieldObservation, FR24CanonicalFieldObservation)):
+            grouped.setdefault(observation.canonical_label, []).append(observation)
+        elif isinstance(observation, VLMFieldObservation):
+            grouped.setdefault(observation.field_name, []).append(observation)
+        else:
+            raise TypeError("observations contain an unsupported single-source record.")
+
+    selected = {}
+    fields: dict[str, FinalFieldResult] = {}
+    for name, candidates in grouped.items():
+        ocr_candidates = [
+            item for item in candidates
+            if isinstance(item, (OCRFieldObservation, FR24CanonicalFieldObservation))
+        ]
+        if ocr_candidates:
+            def provenance_key(item):
+                return (
+                    item.provenance.actual_timestamp_seconds,
+                    item.provenance.candidate_index,
+                )
+
+            usable = [
+                item for item in ocr_candidates
+                if item.status == "extracted" and item.raw_value_text is not None
+            ]
+            normalized = {normalize_field_value(name, item.raw_value_text) for item in usable}
+            ambiguous = any(item.status == "ambiguous" for item in ocr_candidates)
+            non_text = any(
+                isinstance(item, OCRFieldObservation) and item.status == "special_non_text"
+                for item in ocr_candidates
+            )
+            source = max(usable or ocr_candidates, key=provenance_key)
+            selected[name] = source
+            if len(normalized) > 1 or ambiguous:
+                fields[name] = FinalFieldResult(
+                    field_name=name, final_status="unresolved", final_value=None,
+                    fused_observation=None, vlm_review_observation=None,
+                    resolution_reason=(
+                        "OCR representatives contain conflicting values"
+                        if len(normalized) > 1 else "OCR evidence is ambiguous"
+                    ),
+                    source_observation=source,
+                )
+            elif usable:
+                value = normalize_field_value(name, source.raw_value_text)
+                fields[name] = FinalFieldResult(
+                    field_name=name, final_status="resolved_single_source", final_value=value,
+                    fused_observation=None, vlm_review_observation=None,
+                    resolution_reason="value comes only from selected OCR evidence",
+                    source_observation=source,
+                )
+            elif non_text:
+                non_text_source = next(
+                    item for item in ocr_candidates
+                    if isinstance(item, OCRFieldObservation) and item.status == "special_non_text"
+                )
+                selected[name] = non_text_source
+                fields[name] = FinalFieldResult(
+                    field_name=name, final_status="not_available", final_value=None,
+                    fused_observation=None, vlm_review_observation=None,
+                    resolution_reason="field is a calibrated non-text OCR case",
+                    source_observation=non_text_source,
+                )
+            else:
+                fields[name] = FinalFieldResult(
+                    field_name=name, final_status="unresolved", final_value=None,
+                    fused_observation=None, vlm_review_observation=None,
+                    resolution_reason="OCR evidence did not select a usable value",
+                    source_observation=source,
+                )
+        else:
+            selected[name] = candidates[-1]
+
+    for name, observation in selected.items():
+        if name in fields:
+            continue
+        if isinstance(observation, (OCRFieldObservation, FR24CanonicalFieldObservation)):
+            if observation.status == "special_non_text":
+                status, value, reason = "not_available", None, "field is a calibrated non-text OCR case"
+            elif observation.status == "extracted" and observation.raw_value_text is not None:
+                status = "resolved_single_source"
+                value = normalize_field_value(name, observation.raw_value_text)
+                reason = "value comes only from selected OCR evidence"
+            else:
+                status, value, reason = "unresolved", None, "OCR evidence did not select a usable value"
+        else:
+            if observation.status == "observed" and observation.raw_value is not None:
+                status = "resolved_single_source"
+                value = normalize_field_value(name, observation.raw_value)
+                reason = "value comes only from the VLM Pass 1 observation"
+            else:
+                status, value, reason = "unresolved", None, "VLM observation did not provide a usable value"
+        fields[name] = FinalFieldResult(
+            field_name=name, final_status=status, final_value=value,
+            fused_observation=None, vlm_review_observation=None,
+            resolution_reason=reason, source_observation=observation,
+        )
+
+    counts = {name: 0 for name in _FINAL_STATUSES}
+    for item in fields.values():
+        counts[item.final_status] += 1
+    return FinalInvestigationResult(
+        investigation_id=investigation_id, source_video=source_video,
+        start_time_s=start_time_s, end_time_s=end_time_s, fields=fields,
+        summary=FinalInvestigationSummary(
+            total_fields=len(fields), resolved_count=counts["resolved"],
+            resolved_single_source_count=counts["resolved_single_source"],
+            unresolved_count=counts["unresolved"], not_available_count=counts["not_available"],
+        ),
+        direction_consistency=(
+            compare_track_direction(
+                derive_track_direction(selected["TRACK"]), None,
+                visual_direction_status="not_visible",
+            )
+            if ("TRACK" in fields and fields["TRACK"].final_status == "resolved_single_source"
+                and isinstance(selected.get("TRACK"), OCRFieldObservation))
+            else None
+        ),
     )

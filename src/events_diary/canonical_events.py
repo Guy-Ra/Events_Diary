@@ -337,6 +337,40 @@ class CanonicalSession:
         return json.dumps(self.to_dict(), **kwargs)
 
 
+@dataclass(frozen=True)
+class CanonicalDiaryFailure:
+    """Minimal presentation entry for an Investigation that did not complete."""
+
+    investigation_id: int
+    start_time_s: float
+    end_time_s: float
+    reason: str
+
+    def __post_init__(self) -> None:
+        """Validate failure identity, interval, and safe display reason."""
+        _identifier("investigation_id", self.investigation_id)
+        _time("start_time_s", self.start_time_s)
+        _time("end_time_s", self.end_time_s)
+        if self.end_time_s < self.start_time_s:
+            raise ValueError("failure end_time_s must not precede its start.")
+        _text("reason", self.reason)
+
+
+def ordered_diary_entries(session: CanonicalSession, failures=()):
+    """Merge successful canonical events and explicit failures chronologically."""
+    if not isinstance(session, CanonicalSession):
+        raise TypeError("session must be CanonicalSession.")
+    failures = tuple(failures)
+    if any(not isinstance(item, CanonicalDiaryFailure) for item in failures):
+        raise TypeError("failures must contain CanonicalDiaryFailure values.")
+    if {item.investigation_id for item in session.events} & {item.investigation_id for item in failures}:
+        raise ValueError("an Investigation cannot be both completed and failed.")
+    return tuple(sorted(
+        (*session.events, *failures),
+        key=lambda item: (item.start_time_s, item.investigation_id),
+    ))
+
+
 _FINAL_FIELD_PATHS = (
     ("flight.primary_id", "primary_flight_id"),
     ("flight.alternate_id", "alternate_flight_id"),
@@ -448,6 +482,31 @@ def _put_visual_reviews(reviews, values: dict, quality: dict) -> None:
         _put_visual_claim(reviews.get(source_name), canonical_path, values, quality)
 
 
+def _put_vlm_only_visual_route(route, values: dict, quality: dict) -> None:
+    """Carry Pass 1 visual claims into the canonical event for VLM-only runs."""
+    if route is None:
+        return
+    direction_claim = next(
+        (claim for claim in (route.direction_text, route.direction_sector)
+         if claim.status in ("observed", "inferred") and claim.value is not None),
+        None,
+    )
+    direction_path = "movement.visual_flight_direction"
+    if direction_claim is not None:
+        values[direction_path] = direction_claim.value
+    elif route.direction_text.status == route.direction_sector.status == "not_visible":
+        quality["not_available_fields"].append(direction_path)
+
+    for claim, canonical_path in (
+        (route.route_description, "movement.visual_route_description"),
+        (route.departure_context, "movement.visual_departure_context"),
+    ):
+        if claim.status in ("observed", "inferred") and claim.value is not None:
+            values[canonical_path] = claim.value
+        elif claim.status == "not_visible":
+            quality["not_available_fields"].append(canonical_path)
+
+
 def build_canonical_event(
     investigation_record: InvestigationRecord,
     event_id: int,
@@ -455,8 +514,8 @@ def build_canonical_event(
     """Map one final Phase 6 record to one canonical event without re-resolution.
 
     Ticket field values and their unresolved/not-available status come directly
-    from ``FinalInvestigationResult``. Visual route fields use final Pass 2 review
-    observations when present; Pass 1 claims are not treated as final values.
+    from ``FinalInvestigationResult``. Visual route fields use final Pass 2 reviews
+    when present; VLM-only runs retain independent Pass 1 route claims.
     No OCR/VLM execution or evidence arbitration occurs.
     """
     from events_diary.investigation_record import InvestigationRecord
@@ -479,7 +538,10 @@ def build_canonical_event(
         quality["unresolved_fields"].append("movement.direction")
     elif consistency is not None and consistency.derived_direction is not None:
         values["movement.direction"] = consistency.derived_direction.text
-    _put_visual_reviews(investigation_record.vlm_pass2.route_reviews, values, quality)
+    if investigation_record.vlm_pass2 is not None:
+        _put_visual_reviews(investigation_record.vlm_pass2.route_reviews, values, quality)
+    elif investigation_record.fusion_result is None and investigation_record.vlm_pass1 is not None:
+        _put_vlm_only_visual_route(investigation_record.vlm_pass1.visual_route, values, quality)
 
     group_values = lambda prefix: {
         name: values.get(f"{prefix}.{name}")

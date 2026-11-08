@@ -2,7 +2,13 @@
 import numpy as np
 import pytest
 
-from events_diary.config import ROI, AppConfig, UIConfig
+from events_diary.config import (
+    ROI,
+    AppConfig,
+    UIConfig,
+    UnderstandingMode,
+    load_runtime_config,
+)
 
 
 def test_default_log_level() -> None:
@@ -63,6 +69,46 @@ def test_ui_config_regions_fit_reference_frame():
     for roi in regions:
         assert roi.right <= config.reference_width
         assert roi.bottom <= config.reference_height
+
+
+@pytest.mark.parametrize(
+    ("raw_mode", "expected"),
+    (
+        ("ocr_only", UnderstandingMode.OCR_ONLY),
+        ("vlm_only", UnderstandingMode.VLM_ONLY),
+        ("ocr_vlm", UnderstandingMode.OCR_VLM),
+    ),
+)
+def test_runtime_config_reads_supported_understanding_mode_from_dotenv(
+    tmp_path, monkeypatch, raw_mode, expected,
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"EVENTS_DIARY_UNDERSTANDING_MODE={raw_mode}\n", encoding="utf-8")
+    monkeypatch.setenv("EVENTS_DIARY_UNDERSTANDING_MODE", "ignored-unless-overridden")
+
+    config = load_runtime_config(project_root=tmp_path, env_file=env_file, override=True)
+
+    assert config.understanding_mode is expected
+    assert config.input_dir == tmp_path / "experiment" / "input"
+    assert config.output_dir == tmp_path / "experiment" / "output"
+
+
+def test_runtime_config_defaults_to_ocr_vlm_when_mode_is_unset(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.delenv("EVENTS_DIARY_UNDERSTANDING_MODE", raising=False)
+
+    config = load_runtime_config(project_root=tmp_path, env_file=env_file, override=True)
+
+    assert config.understanding_mode is UnderstandingMode.OCR_VLM
+
+
+def test_runtime_config_rejects_invalid_understanding_mode(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("EVENTS_DIARY_UNDERSTANDING_MODE=foo\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="EVENTS_DIARY_UNDERSTANDING_MODE must be one of"):
+        load_runtime_config(project_root=tmp_path, env_file=env_file, override=True)
 
 def test_ticket_subregions_fit_inside_ticket_zone():
     config = UIConfig()

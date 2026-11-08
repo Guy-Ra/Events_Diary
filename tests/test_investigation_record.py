@@ -29,6 +29,7 @@ from events_diary.fusion import (
     FusedFieldObservation,
     FusedInvestigationResult,
     resolve_investigation,
+    resolve_single_source_investigation,
 )
 from events_diary.investigation_lifecycle import (
     InvestigationEndReason,
@@ -41,7 +42,8 @@ from events_diary.investigation_record import (
     assemble_investigation_record,
 )
 from events_diary.investigation_window import InvestigationWindow
-from events_diary.ocr_fields import extract_ocr_fields
+from events_diary.ocr_fields import OCRFieldProvenance, extract_ocr_fields
+from events_diary.ocr_upper_ticket import FR24CanonicalFieldObservation
 from events_diary.representative_selection import (
     InvestigationSelection,
     RepresentativeSelection,
@@ -215,12 +217,200 @@ def test_assembly_exposes_bounds_final_fields_and_source_provenance():
         record.final_fields["AGE"] = record.final_fields["REGISTRATION"]
 
 
+def test_ocr_only_record_keeps_real_ocr_provenance_without_vlm_or_fusion():
+    values = _record(0, 0.0, 3.0)
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=values["ocr_field_occurrences"],
+    )
+    values.update(
+        vlm_pass1=None, fusion_result=None, vlm_pass2=None, final_result=final,
+    )
+
+    record = assemble_investigation_record(**values)
+
+    field = record.final_fields["REGISTRATION"]
+    assert field.final_status == "resolved_single_source"
+    assert field.final_value == "4X-ABC"
+    assert field.source_observation is values["ocr_field_occurrences"][0]
+    assert field.fused_observation is None
+    assert record.vlm_pass1 is record.fusion_result is record.vlm_pass2 is None
+    assert "visual_flight_direction" not in record.final_fields
+
+
+def test_vlm_only_record_keeps_real_vlm_provenance_without_ocr_or_fusion():
+    values = _record(0, 0.0, 3.0)
+    pass1 = values["vlm_pass1"]
+    invisible = VLMVisualRouteClaim(None, "not_visible")
+    route = VLMVisualRouteObservation(
+        invisible, invisible, invisible, invisible, 0, VIDEO, 0.0, 3.0,
+        "test-model", "revision-1", "fr24_vlm_v1",
+    )
+    pass1 = replace(pass1, visual_route=route)
+    values["vlm_pass1"] = pass1
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=pass1.observations,
+    )
+    values.update(
+        ocr_results=(), ocr_field_occurrences=(), fusion_result=None, vlm_pass2=None,
+        final_result=final,
+    )
+
+    record = assemble_investigation_record(**values)
+
+    field = record.final_fields["REGISTRATION"]
+    assert field.final_status == "resolved_single_source"
+    assert field.source_observation is pass1.observations[0]
+    assert field.fused_observation is None
+    assert record.vlm_pass1 is pass1
+    assert record.vlm_pass1.visual_route is not None
+    assert record.ocr_results == record.ocr_field_occurrences == ()
+    assert record.fusion_result is record.vlm_pass2 is None
+
+    session = build_canonical_session(_video_result((record,)))
+
+    assert session.events_count == 1
+    assert session.events[0].aircraft.registration == "4X-ABC"
+    assert session.events[0].movement.visual_route_description is None
+
+
+def test_single_source_ambiguous_ocr_remains_unresolved():
+    values = _record(0, 0.0, 3.0)
+    ambiguous = replace(
+        values["ocr_field_occurrences"][0], status="ambiguous",
+        selected_candidate=None, reason="ambiguous association",
+    )
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=(ambiguous,),
+    )
+
+    assert final.fields["REGISTRATION"].final_status == "unresolved"
+    assert final.fields["REGISTRATION"].final_value is None
+
+
+def test_unavailable_vlm_single_source_value_remains_unresolved():
+    values = _record(0, 0.0, 3.0)
+    observation = replace(
+        values["vlm_pass1"].observations[0], status="unavailable", raw_value=None,
+    )
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=(observation,),
+    )
+
+    assert final.fields["REGISTRATION"].final_status == "unresolved"
+    assert final.fields["REGISTRATION"].final_value is None
+
+
 def test_multiple_dynamic_ocr_occurrences_are_preserved():
     values = _record(0, 0.0, 3.0, repeated_occurrence=True)
     record = assemble_investigation_record(**values)
     track = [item for item in record.ocr_field_occurrences if item.canonical_label == "TRACK"]
     assert [item.raw_value_text for item in track] == ["281°", "295°"]
     assert len(record.ocr_results) == 3
+
+
+def test_conflicting_ocr_tracks_across_representatives_remain_unresolved():
+    values = _record(0, 0.0, 3.0, repeated_occurrence=True)
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=values["ocr_field_occurrences"],
+    )
+
+    assert final.fields["TRACK"].final_status == "unresolved"
+    assert final.fields["TRACK"].final_value is None
+    assert final.direction_consistency is None
+
+
+def test_equivalent_ticket_time_formats_resolve_and_preserve_raw_provenance():
+    values = _record(0, 0.0, 3.0, repeated_occurrence=True)
+    time_pairs = {
+        "origin_scheduled_time": ("3:55 pM", "3.55 PM"),
+        "origin_actual_time": ("4:24 pM", "4:24 pm"),
+        "destination_scheduled_time": ("7:45 pM", "7:45PM"),
+        "destination_estimated_or_actual_time": ("7:38 pM", "7:38 pm"),
+    }
+    observations = []
+    for candidate_index, raw_result in enumerate(values["ocr_results"][:2]):
+        provenance = OCRFieldProvenance(
+            raw_result.investigation_index, raw_result.candidate_index,
+            raw_result.frame_index, raw_result.actual_timestamp_seconds,
+            raw_result.engine_name, raw_result.preprocessing_name,
+            raw_result.resolution_status,
+        )
+        for field_name, pair in time_pairs.items():
+            observations.append(FR24CanonicalFieldObservation(
+                field_name, "extracted", pair[candidate_index], provenance, (),
+                "test_fixture",
+            ))
+
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=tuple(observations),
+    )
+
+    expected = {
+        "origin_scheduled_time": "3:55 PM",
+        "origin_actual_time": "4:24 PM",
+        "destination_scheduled_time": "7:45 PM",
+        "destination_estimated_or_actual_time": "7:38 PM",
+    }
+    for field_name, normalized_value in expected.items():
+        result = final.fields[field_name]
+        assert result.final_status == "resolved_single_source"
+        assert result.final_value == normalized_value
+        assert result.source_observation.raw_value_text == time_pairs[field_name][1]
+        assert result.source_observation.provenance.candidate_index == 1
+
+
+@pytest.mark.parametrize(
+    ("field_name", "left", "right"),
+    [
+        ("origin_scheduled_time", "3:55 PM", "4:24 PM"),
+        ("destination_scheduled_time", "7:45 PM", "7:38 PM"),
+    ],
+)
+def test_real_time_disagreement_remains_unresolved(field_name, left, right):
+    values = _record(0, 0.0, 3.0, repeated_occurrence=True)
+    observations = []
+    for candidate_index, raw_result in enumerate(values["ocr_results"][:2]):
+        provenance = OCRFieldProvenance(
+            raw_result.investigation_index, raw_result.candidate_index,
+            raw_result.frame_index, raw_result.actual_timestamp_seconds,
+            raw_result.engine_name, raw_result.preprocessing_name,
+            raw_result.resolution_status,
+        )
+        observations.append(FR24CanonicalFieldObservation(
+            field_name, "extracted", (left, right)[candidate_index], provenance, (),
+            "test_fixture",
+        ))
+
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=tuple(observations),
+    )
+
+    assert final.fields[field_name].final_status == "unresolved"
+    assert final.fields[field_name].final_value is None
+
+
+def test_ocr_only_derives_direction_from_one_accepted_track():
+    track_result, track = _ocr(
+        "293", investigation_id=0, candidate_index=0, timestamp=1.5, field="TRACK",
+    )
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=(track,),
+    )
+
+    assert track_result.frame_index == track.provenance.frame_index
+    assert final.fields["TRACK"].final_status == "resolved_single_source"
+    assert final.fields["TRACK"].final_value == "293"
+    assert final.direction_consistency is not None
+    assert final.direction_consistency.derived_direction.degrees == 293
+    assert final.direction_consistency.visual_direction_status == "not_visible"
 
 
 def test_two_same_aircraft_investigations_remain_independent_and_ordered():
@@ -323,6 +513,65 @@ def test_canonical_mapping_propagates_resolved_and_resolved_single_source_values
     assert "route.origin_airport_code" not in event.data_quality.not_available_fields
 
 
+def test_upper_ticket_single_source_fields_reach_canonical_diary_without_visual_claims():
+    """Carry extracted upper-ticket slots through resolution, record, canonical and rendering."""
+    from events_diary.detailed_diary import render_detailed_diary
+    from events_diary.ocr_fields import OCRFieldProvenance
+
+    values = _record(0, 0.0, 3.0)
+    raw_ocr = values["ocr_results"][0]
+    provenance = OCRFieldProvenance(
+        0, raw_ocr.candidate_index, raw_ocr.frame_index,
+        raw_ocr.actual_timestamp_seconds, raw_ocr.engine_name,
+        raw_ocr.preprocessing_name, raw_ocr.resolution_status,
+    )
+    upper_fields = (
+        ("primary_flight_id", "MEA251"),
+        ("alternate_flight_id", "ME251"),
+        ("airline_name", "MEA"),
+        ("origin_airport_code", "BEY"),
+        ("destination_airport_code", "ATH"),
+        ("origin_scheduled_time", "09:10"),
+        ("origin_actual_time", "09:18"),
+        ("destination_scheduled_time", "11:05"),
+        ("destination_estimated_or_actual_time", "11:05"),
+        ("aircraft_code", "A21N"),
+    )
+    upper = tuple(
+        FR24CanonicalFieldObservation(name, "extracted", text, provenance, (), "test_fixture")
+        for name, text in upper_fields
+    )
+    occurrences = (*values["ocr_field_occurrences"], *upper)
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=occurrences,
+    )
+    values.update(
+        ocr_field_occurrences=occurrences, vlm_pass1=None, fusion_result=None,
+        vlm_pass2=None, final_result=final,
+    )
+    record = assemble_investigation_record(**values)
+    event = build_canonical_event(record, event_id=0)
+    from events_diary.canonical_events import build_canonical_session
+
+    diary = render_detailed_diary(build_canonical_session(_video_result((record,))))
+
+    assert event.flight.primary_id == "MEA251"
+    assert event.flight.alternate_id == "ME251"
+    assert event.route.origin_airport_code == "BEY"
+    assert event.route.destination_airport_code == "ATH"
+    assert event.route.scheduled_departure == "09:10"
+    assert event.route.actual_departure == "09:18"
+    assert event.route.scheduled_arrival == "11:05"
+    assert event.route.estimated_or_actual_arrival == "11:05"
+    assert event.aircraft.code == "A21N"
+    assert event.movement.visual_flight_direction is None
+    assert event.movement.visual_route_description is None
+    assert "Flight: MEA251 / ME251" in diary
+    assert f"Route: BEY {chr(8594)} ATH" in diary
+    assert "Visual route:" not in diary
+
+
 def test_canonical_movement_carries_phase6_direction_and_visual_claims():
     """Prefer final Pass 2 visual reviews over retained Pass 1 claims."""
     record = assemble_investigation_record(
@@ -369,6 +618,47 @@ def test_canonical_movement_carries_phase6_direction_and_visual_claims():
     assert event.movement.visual_flight_direction == "Northwest reviewed"
     assert event.movement.visual_route_description == "Reviewed route description"
     assert event.movement.visual_departure_context == "Reviewed near BEY"
+
+
+def test_vlm_only_pass1_visual_claims_reach_canonical_event_and_detailed_diary():
+    """Retain Pass 1 map claims through single-source resolution and rendering."""
+    from events_diary.detailed_diary import render_detailed_diary
+
+    record = _assemble()
+    route = VLMVisualRouteObservation(
+        direction_sector=VLMVisualRouteClaim("NW", "observed"),
+        direction_text=VLMVisualRouteClaim("Northwest", "inferred"),
+        route_description=VLMVisualRouteClaim("Trail continues northwest over the sea", "inferred"),
+        departure_context=VLMVisualRouteClaim(None, "not_visible"),
+        investigation_index=0,
+        source_video=VIDEO,
+        source_start_s=0.0,
+        source_end_s=3.0,
+        model_name=record.vlm_pass1.model_name,
+        model_revision=record.vlm_pass1.model_revision,
+        prompt_version=record.vlm_pass1.prompt_version,
+    )
+    pass1 = replace(record.vlm_pass1, visual_route=route)
+    final = resolve_single_source_investigation(
+        investigation_id=0, source_video=VIDEO, start_time_s=0.0, end_time_s=3.0,
+        observations=pass1.observations,
+    )
+    record = replace(
+        record, ocr_results=(), ocr_field_occurrences=(), vlm_pass1=pass1,
+        fusion_result=None, vlm_pass2=None, final_result=final,
+    )
+
+    event = build_canonical_event(record, event_id=0)
+    diary = render_detailed_diary(build_canonical_session(_video_result((record,))))
+
+    assert event.movement.visual_flight_direction == "Northwest"
+    assert event.movement.visual_route_description == "Trail continues northwest over the sea"
+    assert event.field_state("movement.visual_flight_direction") == "value"
+    assert event.field_state("movement.visual_route_description") == "value"
+    assert event.field_state("movement.visual_departure_context") == "not_available"
+    assert "Visual direction: Northwest" in diary
+    assert "Trail continues northwest over the sea" in diary
+    assert "Visual route:" in diary
 
 
 def test_canonical_visual_review_statuses_distinguish_unresolved_unavailable_and_absent():

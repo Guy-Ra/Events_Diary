@@ -234,6 +234,37 @@ def test_time_cleanup_preserves_semantics_and_formatting():
     assert normalize_field_value("origin_scheduled_time", "2:30 PM") != "14:30"
 
 
+@pytest.mark.parametrize(
+    ("field_name", "raw", "expected"),
+    [
+        ("origin_scheduled_time", "3:55 PM", "3:55 PM"),
+        ("origin_scheduled_time", "3.55 PM", "3:55 PM"),
+        ("origin_actual_time", "3:55 pM", "3:55 PM"),
+        ("origin_actual_time", "3:55PM", "3:55 PM"),
+        ("destination_scheduled_time", "7:45PM", "7:45 PM"),
+        ("destination_scheduled_time", "7:45 pM", "7:45 PM"),
+        ("destination_estimated_or_actual_time", "4:24 pm", "4:24 PM"),
+    ],
+)
+def test_time_normalization_canonicalizes_only_clear_clock_forms(field_name, raw, expected):
+    assert normalize_field_value(field_name, raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("field_name", "left", "right"),
+    [
+        ("origin_scheduled_time", "3:55 PM", "4:24 PM"),
+        ("destination_scheduled_time", "7:45 PM", "7:38 PM"),
+    ],
+)
+def test_genuinely_different_clock_times_remain_distinct(field_name, left, right):
+    assert normalize_field_value(field_name, left) != normalize_field_value(field_name, right)
+
+
+def test_time_format_cleanup_does_not_rewrite_non_time_fields():
+    assert normalize_field_value("airline_name", "3.55 pM") == "3.55 pM"
+
+
 def test_none_unknown_fields_and_source_independence():
     assert normalize_field_value("TRACK", None) is None
     value = "  MiXeD   Unknown Text  "

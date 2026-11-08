@@ -25,6 +25,7 @@ from events_diary.investigation_lifecycle import InvestigationInterval
 from events_diary.investigation_temporal import ConfirmedInvestigationEvent
 from events_diary.investigation_window import InvestigationWindow
 from events_diary.ocr_fields import OCRFieldObservation
+from events_diary.ocr_upper_ticket import FR24CanonicalFieldObservation
 from events_diary.representative_selection import InvestigationSelection
 from events_diary.ticket_ocr import OCRTicketResult
 from events_diary.ticket_stable_views import TicketStableView
@@ -67,10 +68,10 @@ class InvestigationRecord:
     materialized_candidates: tuple[MaterializedEvidenceCandidate, ...]
     selection: InvestigationSelection
     ocr_results: tuple[OCRTicketResult, ...]
-    ocr_field_occurrences: tuple[OCRFieldObservation, ...]
-    vlm_pass1: VLMInvestigationResult
-    fusion_result: FusedInvestigationResult
-    vlm_pass2: VLMReviewResult
+    ocr_field_occurrences: tuple[OCRFieldObservation | FR24CanonicalFieldObservation, ...]
+    vlm_pass1: VLMInvestigationResult | None
+    fusion_result: FusedInvestigationResult | None
+    vlm_pass2: VLMReviewResult | None
     final_result: FinalInvestigationResult
     diagnostics: tuple[str, ...] = ()
 
@@ -100,25 +101,29 @@ class InvestigationRecord:
             "candidates": EvidenceCandidate,
             "materialized_candidates": MaterializedEvidenceCandidate,
             "ocr_results": OCRTicketResult,
-            "ocr_field_occurrences": OCRFieldObservation,
         }
         for name, expected_type in sequence_types.items():
             values = tuple(getattr(self, name))
             if any(not isinstance(value, expected_type) for value in values):
                 raise TypeError(f"{name} must contain {expected_type.__name__} records.")
             object.__setattr__(self, name, values)
+        ocr_occurrences = tuple(self.ocr_field_occurrences)
+        if any(not isinstance(value, (OCRFieldObservation, FR24CanonicalFieldObservation))
+               for value in ocr_occurrences):
+            raise TypeError("ocr_field_occurrences must contain recognized OCR observations.")
+        object.__setattr__(self, "ocr_field_occurrences", ocr_occurrences)
         if not isinstance(self.window, InvestigationWindow):
             raise TypeError("window must be InvestigationWindow.")
         if not isinstance(self.sampling_plan, AdaptiveSamplingPlan):
             raise TypeError("sampling_plan must be AdaptiveSamplingPlan.")
         if not isinstance(self.selection, InvestigationSelection):
             raise TypeError("selection must be InvestigationSelection.")
-        if not isinstance(self.vlm_pass1, VLMInvestigationResult):
-            raise TypeError("vlm_pass1 must be VLMInvestigationResult.")
-        if not isinstance(self.fusion_result, FusedInvestigationResult):
-            raise TypeError("fusion_result must be FusedInvestigationResult.")
-        if not isinstance(self.vlm_pass2, VLMReviewResult):
-            raise TypeError("vlm_pass2 must be VLMReviewResult.")
+        if self.vlm_pass1 is not None and not isinstance(self.vlm_pass1, VLMInvestigationResult):
+            raise TypeError("vlm_pass1 must be VLMInvestigationResult or None.")
+        if self.fusion_result is not None and not isinstance(self.fusion_result, FusedInvestigationResult):
+            raise TypeError("fusion_result must be FusedInvestigationResult or None.")
+        if self.vlm_pass2 is not None and not isinstance(self.vlm_pass2, VLMReviewResult):
+            raise TypeError("vlm_pass2 must be VLMReviewResult or None.")
         if not isinstance(self.final_result, FinalInvestigationResult):
             raise TypeError("final_result must be FinalInvestigationResult.")
         if self.selection.investigation_index != self.investigation_id:
@@ -138,27 +143,62 @@ class InvestigationRecord:
         for chosen in self.selection.selections:
             if not 0 <= chosen.candidate_index < len(self.candidates):
                 raise ValueError("selection candidate index is outside its Investigation-local sequence.")
-        self._validate_source_result(self.vlm_pass1, start, end, "VLM Pass 1")
-        self._validate_source_result(self.vlm_pass2, start, end, "VLM Pass 2")
+        if self.vlm_pass1 is not None:
+            self._validate_source_result(self.vlm_pass1, start, end, "VLM Pass 1")
+        if self.vlm_pass2 is not None:
+            self._validate_source_result(self.vlm_pass2, start, end, "VLM Pass 2")
+        if self.fusion_result is not None and self.vlm_pass1 is None:
+            raise ValueError("fusion requires actual VLM Pass 1 evidence.")
+        if self.vlm_pass2 is not None and self.fusion_result is None:
+            raise ValueError("VLM Pass 2 requires an actual fusion result.")
         for item in self.ocr_results:
             if item.investigation_index != self.investigation_id:
                 raise ValueError("OCR result belongs to a different Investigation.")
             if not _inside_interval(item.actual_timestamp_seconds, start, end):
                 raise ValueError("OCR frame timestamp must lie inside this Investigation.")
         for item in self.ocr_field_occurrences:
-            if item.provenance.investigation_index != self.investigation_id:
+            provenance = item.provenance
+            if provenance.investigation_index != self.investigation_id:
                 raise ValueError("OCR field occurrence belongs to a different Investigation.")
-            if not _inside_interval(item.provenance.actual_timestamp_seconds, start, end):
+            if not _inside_interval(provenance.actual_timestamp_seconds, start, end):
                 raise ValueError("OCR field timestamp must lie inside this Investigation.")
+        for item in self.final_result.fields.values():
+            source = item.source_observation
+            if source is None:
+                continue
+            if isinstance(source, (OCRFieldObservation, FR24CanonicalFieldObservation)):
+                if (source.provenance.investigation_index != self.investigation_id
+                        or not _inside_interval(source.provenance.actual_timestamp_seconds, start, end)):
+                    raise ValueError("single-source OCR final evidence must belong to this Investigation.")
+                if source not in self.ocr_field_occurrences:
+                    raise ValueError("single-source OCR final evidence must be retained in OCR occurrences.")
+                if isinstance(source, FR24CanonicalFieldObservation) and not any(
+                    result.candidate_index == source.provenance.candidate_index
+                    and result.frame_index == source.provenance.frame_index
+                    for result in self.ocr_results
+                ):
+                    raise ValueError("FR24 OCR evidence must reference a retained OCR result.")
+            elif (source.investigation_index != self.investigation_id
+                    or source.source_video != self.source_video
+                    or source.source_start_s != start or source.source_end_s != end):
+                raise ValueError("single-source VLM final evidence must belong to this Investigation.")
+            elif self.vlm_pass1 is None or source not in self.vlm_pass1.observations:
+                raise ValueError("single-source VLM final evidence must be retained in Pass 1.")
         for result_name, result in (
             ("fusion", self.fusion_result), ("final resolution", self.final_result),
         ):
+            if result is None:
+                continue
             if (result.investigation_id != self.investigation_id
                     or result.source_video != self.source_video
                     or result.start_time_s != start or result.end_time_s != end):
                 raise ValueError(f"{result_name} provenance must match this Investigation.")
-        if set(self.final_result.fields) != set(self.fusion_result.fields):
+        if self.fusion_result is not None and set(self.final_result.fields) != set(self.fusion_result.fields):
             raise ValueError("final field names must match the fusion field names.")
+        if self.fusion_result is None and any(
+            item.fused_observation is not None for item in self.final_result.fields.values()
+        ):
+            raise ValueError("single-source final fields must not carry fused observations.")
         messages = tuple(self.diagnostics)
         if any(not isinstance(message, str) for message in messages):
             raise TypeError("diagnostics must contain strings.")
@@ -208,13 +248,14 @@ class InvestigationRecord:
         return tuple(
             direction
             for observation in self.ocr_field_occurrences
+            if isinstance(observation, OCRFieldObservation)
             if (direction := derive_track_direction(observation)) is not None
         )
 
     @property
     def track_direction_cross_checks(self) -> tuple[DirectionConsistency, ...]:
         """Compare each OCR-derived TRACK direction with the retained Pass 1 map claim."""
-        route = self.vlm_pass1.visual_route
+        route = self.vlm_pass1.visual_route if self.vlm_pass1 is not None else None
         visual_sector = (
             route.direction_sector.value
             if route is not None and route.direction_sector.status in ("observed", "inferred")
@@ -241,10 +282,10 @@ def assemble_investigation_record(
     materialized_candidates: Sequence[MaterializedEvidenceCandidate],
     selection: InvestigationSelection,
     ocr_results: Sequence[OCRTicketResult],
-    ocr_field_occurrences: Sequence[OCRFieldObservation],
-    vlm_pass1: VLMInvestigationResult,
-    fusion_result: FusedInvestigationResult,
-    vlm_pass2: VLMReviewResult,
+    ocr_field_occurrences: Sequence[OCRFieldObservation | FR24CanonicalFieldObservation],
+    vlm_pass1: VLMInvestigationResult | None,
+    fusion_result: FusedInvestigationResult | None,
+    vlm_pass2: VLMReviewResult | None,
     final_result: FinalInvestigationResult,
     diagnostics: Sequence[str] = (),
 ) -> InvestigationRecord:
@@ -270,7 +311,9 @@ class InvestigationFailure:
     end_time_s: float
     failed_stage: str
     reason: str
-    artifact_directory: Path
+    artifact_directory: Path | None = None
+    error_type: str | None = None
+    provider_diagnostics_json: str | None = None
 
     def __post_init__(self) -> None:
         """Validate failure identity and original-video time bounds."""
@@ -278,8 +321,10 @@ class InvestigationFailure:
             raise TypeError("investigation_id must be an integer, not bool.")
         if self.investigation_id < 0:
             raise ValueError("investigation_id must be nonnegative.")
-        if not isinstance(self.source_video, Path) or not isinstance(self.artifact_directory, Path):
-            raise TypeError("source_video and artifact_directory must be pathlib.Path.")
+        if not isinstance(self.source_video, Path):
+            raise TypeError("source_video must be pathlib.Path.")
+        if self.artifact_directory is not None and not isinstance(self.artifact_directory, Path):
+            raise TypeError("artifact_directory must be pathlib.Path or None.")
         for name, value in (("start_time_s", self.start_time_s), ("end_time_s", self.end_time_s)):
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise TypeError(f"{name} must be a real number, not bool.")
@@ -291,6 +336,10 @@ class InvestigationFailure:
             raise ValueError("failed_stage must be a nonempty string.")
         if not isinstance(self.reason, str) or not self.reason.strip():
             raise ValueError("reason must be a nonempty string.")
+        if self.error_type is not None and (not isinstance(self.error_type, str) or not self.error_type.strip()):
+            raise ValueError("error_type must be a nonempty string or None.")
+        if self.provider_diagnostics_json is not None and not isinstance(self.provider_diagnostics_json, str):
+            raise TypeError("provider_diagnostics_json must be a string or None.")
 
 
 @dataclass(frozen=True)

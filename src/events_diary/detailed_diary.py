@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from events_diary.canonical_events import (
     DETAILED_DIARY_PROFILE,
+    CanonicalDiaryFailure,
     CanonicalEvent,
     CanonicalSession,
+    ordered_diary_entries,
 )
 from events_diary.renderer_core import (
     compose_aircraft_identity,
@@ -133,7 +135,9 @@ def _render_event(event: CanonicalEvent, number: int) -> str:
     return "\n\n".join("\n".join(group) for group in groups)
 
 
-def render_detailed_diary(session: CanonicalSession) -> str:
+def render_detailed_diary(
+    session: CanonicalSession, *, failures: tuple[CanonicalDiaryFailure, ...] = (),
+) -> str:
     """Render a canonical session as deterministic Detailed Diary text.
 
     Events retain session order and each receives one block. Profile-selected
@@ -144,7 +148,13 @@ def render_detailed_diary(session: CanonicalSession) -> str:
     """
     if not isinstance(session, CanonicalSession):
         raise TypeError("session must be CanonicalSession.")
-    return "\n\n".join(
-        _render_event(event, number)
-        for number, event in enumerate(session.events, start=1)
-    )
+    blocks = []
+    for number, entry in enumerate(ordered_diary_entries(session, failures), start=1):
+        if isinstance(entry, CanonicalDiaryFailure):
+            interval = format_investigation_interval(entry.start_time_s, entry.end_time_s)
+            blocks.append(
+                f"Event {number} — {interval}\nVLM processing failed\nReason: {entry.reason}"
+            )
+        else:
+            blocks.append(_render_event(entry, number))
+    return "\n\n".join(blocks)
