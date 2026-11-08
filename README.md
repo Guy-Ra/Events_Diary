@@ -1,231 +1,116 @@
 # Events Diary
 
-Local project building structured aircraft event logs from Flightradar24 screen
-recordings using deterministic computer vision, OCR and Gemini VLM observations.
+Events Diary turns a Flightradar24 (FR24) screen recording into two text reports: a concise Operational Diary and a more detailed Diary. It detects aircraft Investigations, selects ticket evidence, reads visible ticket fields, records visual route context, and renders resolved observations while preserving their sources and uncertainty.
 
-## Project Status
+The current MVP is designed for local processing of one video at a time. Investigation detection and evidence selection are deterministic; OCR and the configured Gemini VLM provide separate observations that are resolved into a canonical session before rendering.
 
-**Phase 5 - Role-Based Frame & Ticket-Section Selection is COMPLETE.**
+## How it works
 
-The offline system supports FR24 UI/layout mapping, visual-change and map-motion
-analysis, ticket scrolling, Investigation lifecycle detection, adaptive sampling,
-stable ticket views, and evidence candidate timelines. Raw and effective presence
-remain distinct.
-
-Phase 5 provides the production flow:
-`EvidenceCandidate -> physical frame materialization -> ticket-view comparison
--> representative selection`. Comparisons are supporting measurements; the pure
-selector does not require image access or similarity decisions. Selection retains
-one primary representative per stable ticket view and conservatively keeps every
-post-scroll view, with separate bounded map/route evidence and optional scroll
-provenance/boundary context. Evidence volume follows role coverage rather than a
-global frame quota.
-
-Validation is representative/manual, not a labeled benchmark. Thresholds remain
-provisional; stable views do not prove loading completeness. The complete-video
-Gemini VLM path and Phase 6.5 OCR/VLM fusion/cross-check are implemented and
-validated on real video.
-
-**Phase 6 — Complete Investigation Understanding is COMPLETE for MVP purposes.**
-The validated pipeline includes OCR extraction and spatial structure, structured
-ticket extraction, deterministic TRACK-to-compass conversion, Pass 1 ticket and
-map/route observations, provenance-preserving fusion and temporal cross-checks,
-Pass 2 v3 crop-assisted review, conservative resolution, and isolated
-multi-Investigation assembly. Phase 6.6 and 6.7 real-video validation completed.
-
-Pass 2 v3 sends the full Investigation video, Phase 5-selected ticket crops,
-OCR evidence, VLM Pass 1 evidence and fusion/context information in one Gemini
-request. The video provides temporal and map/route context; crops support precise
-small-text ticket reading. No image-only request or Pass 3 exists. The final
-validated model was `gemini-3.6-flash` throughout the successful complete
-validation dataset. That validation used a 900-second timeout and its then-current
-503/timeout backoff of 30 seconds then 90 seconds. `gemini-3.8-flash` was an
-optional fallback only for confirmed 3.6 Free Tier daily quota exhaustion and
-was not used in that dataset.
-
-Validation used `ticket_scroll_test.mp4` and `investigation_switch_test.mp4`.
-The ticket-scroll targeted regression achieved 11/11 manually reviewed targets;
-the multi-Investigation regression completed structurally with record isolation
-and correctly scoped crops. Validation is representative rather than a benchmark
-and does not claim a single overall accuracy score.
-
-Known limitation: occasional low-priority small-text errors may remain after
-crop-assisted review. In one Investigation AGE was visibly 6 years while Pass 2
-returned 4 years. This is accepted for MVP and deferred to Phase 10.
-
-**Roadmap:** Phases 6 through 9 are COMPLETE, including Phase 9.5 real end-to-end validation. Phase 10 System Optimization & Improvement is NEXT / NOT STARTED. The former standalone route-analysis phase remains absorbed into Phase 6.
-
-**Phase 7 — Canonical Event Data & Events Diary Foundation is COMPLETE.**
-Phase 7.1 field selection, Phase 7.2 (`CanonicalEvent` and
-`CanonicalSession` contracts), and Phase 7.3 missing-data semantics are complete;
-Phase 7.4 session aggregation and saved-artifact validation are complete.
-Canonical direction follows final TRACK; intermediate OCR-derived direction is
-not propagated when final TRACK is unresolved. Phase 7.5 renderer-ready field
-profiles and final canonical-layer validation are complete. Phase 8.1 provides
-the shared renderer core. Phase 8.2 renders a concise plain-text Operational
-Diary from `CanonicalSession` only, with one interval-headed block per
-Investigation and missing operational values omitted. Phase 8.3 shows resolved
-TRACK and deterministic direction together, omits that line when TRACK is
-unusable, and groups source-faithful visual-route and departure-context text
-under one heading. Phase 8.4 establishes the fixed output filenames and
-single-video workspace conventions; it does not add a production file writer.
-Phase 8 renderers return deterministic UTF-8-safe strings:
-`CanonicalSession → render_operational_diary(session) -> str` and
-`render_detailed_diary(session) -> str`. They make no inference and have no
-Phase 6 runtime dependency. `main.py` selects the input, runs the configured
-pipeline, receives both strings, and writes them to
-`experiment/output/operational_diary.txt` and
-`experiment/output/detailed_diary.txt`. Empty sessions continue to render as
-empty strings. The single-video MVP workspace uses `experiment/input/` and
-`experiment/output/`; generated contents remain ignored and `.gitkeep`
-placeholders remain trackable.
-Phase 9 full-system integration and real end-to-end validation are COMPLETE. All three modes were run through the production entry point; detailed comparisons and request diagnostics are recorded in `data/validation/phase9_5/phase9_5_validation_report.md`. Phase 10 is reserved for quality improvements identified by that representative validation.
-
-**Phase 9: Full System Integration & Main Orchestrator is COMPLETE.**
-The production entry point runs the configured `ocr_only`, `vlm_only`, or
-`ocr_vlm` path through canonical conversion and the two pure diary renderers.
-Phase 9.5 validated all three modes on `investigation_switch_test.mp4` with
-`gemini-3.6-flash`: OCR-only made zero Gemini requests, VLM-only made two Pass 1
-requests, and combined mode made two Pass 1 plus two Pass 2 requests. Combined
-mode remains the MVP default. It added route/visual context and retained
-unresolved values conservatively; OCR-only's focused refinement now connects
-existing upper-ticket extraction so it attempts meaningful flight, route, time,
-aircraft and TRACK fields. It remains source-faithful and does not infer visual
-map claims from ticket text. Failed Investigations are reported with safe
-per-Investigation diagnostics before canonicalization and prevent all diary
-writes for that video. VLM-only made confident errors on Investigation 1. Earlier VLM-only attempts
-received transient HTTP 503 responses, followed by a successful full run. The
-runs preserve the two fixed output files and clean temporary media. These are
-representative manual results, not a benchmark; further quality work is deferred
-to Phase 10. See the detailed comparison at
-[`data/validation/phase9_5/phase9_5_validation_report.md`](data/validation/phase9_5/phase9_5_validation_report.md).
-
-See the [project plan](docs/project_plan.md) and [system design](docs/system_design.md).
-Run local closure checks with `uv run python scripts/validation/validate_phase3.py`,
-`uv run python scripts/validation/validate_phase4.py`, and
-`uv run python scripts/validation/validate_phase5.py` when the required recordings
-are available under `data/videos/`. Detailed measurements stay in local reports.
-
-## Goals
-
-The system is intended to:
-
-- detect aircraft investigation events in Flightradar24 screen recordings;
-- extract structured information from the aircraft ticket;
-- describe visible route context and movement direction;
-- use OCR, computer vision, and selective VLM assistance;
-- preserve each Investigation as an independent event;
-- generate a canonical structured session record;
-- render a concise operational log and a detailed report.
-
-## Project Structure
-
-```text
-Events_Diary/
-├── docs/
-│   ├── system_design.md
-│   └── project_plan.md
-├── src/
-│   └── events_diary/
-│       └── __init__.py
-├── tests/
-├── .gitignore
-├── .python-version
-├── pyproject.toml
-├── README.md
-└── uv.lock
+```mermaid
+flowchart TD
+    A[One FR24 MP4] --> B[Video and UI analysis]
+    B --> C[Investigation intervals]
+    C --> D[Sampling, stable views, and representative selection]
+    D --> E{Understanding mode}
+    E -->|ocr_only| O[OCR observations]
+    E -->|vlm_only| V[Gemini video and selected ticket crops]
+    E -->|ocr_vlm| O
+    E -->|ocr_vlm| V2[Gemini video observations]
+    O --> F[Evidence resolution]
+    V --> F
+    V2 --> G[OCR/VLM fusion and Pass 2 review]
+    G --> F
+    F --> H[Canonical session]
+    H --> I[Operational Diary]
+    H --> J[Detailed Diary]
 ```
 
-## Development Environment
+The video/UI stage uses the FR24 layout model, visual change, map and route evidence, ticket scrolling, and Investigation lifecycle analysis. For each Investigation, adaptive sampling and stable-view analysis identify representative physical frames. OCR and VLM observations retain separate provenance. In combined mode, the VLM's first pass receives the Investigation video without OCR values; fusion and a later review pass then cross-check the sources. Unavailable, unresolved, conflicting, and inferred information remains distinguishable during resolution.
 
-Current baseline:
+## Understanding modes
 
-- Python 3.10
-- uv
-- pytest
-- Ruff
+Set `EVENTS_DIARY_UNDERSTANDING_MODE` to one of:
 
-## Setup
+| Mode | Behavior |
+| --- | --- |
+| `ocr_vlm` | Default. Runs OCR and VLM branches, fuses their observations, and uses a VLM review pass before resolution. |
+| `ocr_only` | Reads selected ticket representatives with OCR and resolves OCR evidence without Gemini. |
+| `vlm_only` | Uses the continuous Investigation clip and selected ticket crops with Gemini; it does not run OCR or fusion. Successful Investigations can be retained when another Investigation fails. |
 
-Clone the repository:
+In `ocr_only` and `ocr_vlm`, a failed Investigation prevents diary files from being written. In `vlm_only`, output can be `completed`, `partial`, or `failed`; per-Investigation failures are represented without inventing field values.
+
+## Requirements and setup
+
+- Python 3.10 or newer
+- [uv](https://docs.astral.sh/uv/)
+- A Gemini API key for `ocr_vlm` and `vlm_only`
+
+Install the development and OCR dependencies:
 
 ```bash
-git clone https://github.com/Guy-Ra/Events_Diary.git
-cd Events_Diary
+uv sync --group dev --group ocr-calibration
 ```
 
-Install the project and development dependencies:
+Copy `.env.example` to `.env` and set the configuration for your run. Provide the API key in `.env` for VLM modes; never commit that file. The template uses `gemini-flash-latest` as its model setting. Provider access, model availability, quotas, and request costs are controlled by Google and may change.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `EVENTS_DIARY_UNDERSTANDING_MODE` | Pipeline mode: `ocr_only`, `vlm_only`, or `ocr_vlm` | `ocr_vlm` |
+| `EVENTS_DIARY_VLM_PROVIDER` | VLM provider | `gemini` |
+| `EVENTS_DIARY_VLM_API_KEY` | Gemini API key; required for VLM modes | unset |
+| `EVENTS_DIARY_VLM_API_BASE_URL` | Gemini API base URL | `https://generativelanguage.googleapis.com` |
+| `EVENTS_DIARY_VLM_API_VERSION` | Gemini API version | `v1beta` |
+| `EVENTS_DIARY_VLM_MODEL` | Gemini model name | `gemini-flash-latest` |
+| `EVENTS_DIARY_VLM_REQUEST_TIMEOUT_S` | Per-request timeout in seconds | `180` |
+| `EVENTS_DIARY_VLM_MAX_ATTEMPTS` | Maximum request attempts | `3` |
+| `EVENTS_DIARY_VLM_RETRY_BASE_DELAY_S` | Retry backoff base in seconds | `5` |
+| `EVENTS_DIARY_VLM_RETRY_MAX_DELAY_S` | Maximum retry backoff in seconds | `60` |
+| `EVENTS_DIARY_VLM_RETRY_JITTER_S` | Retry jitter in seconds | `1` |
+
+The OCR path uses RapidOCR with ONNX Runtime on CPU. The VLM path sends Investigation video inline to Gemini and currently enforces a 20 MiB video-file limit. VLM requests are subject to provider availability, quotas, and transient failures.
+
+## Run
+
+Place exactly one `.mp4` video directly in `experiment/input/`, then run:
 
 ```bash
-uv sync
+uv run python -m events_diary
 ```
 
-Verify the package:
+The input selector examines files directly in that directory (not nested folders) and reports an error if it finds no MP4 or more than one. The pipeline assumes FR24 UI regions and supports the canonical 1920×1080 layout plus proportional layouts with the same aspect ratio. Cropped or incompatible layouts may not be interpreted correctly.
 
-```bash
-uv run python -c "import events_diary; print(events_diary)"
-```
+Successful runs write:
 
-Run tests:
+| Path | Contents |
+| --- | --- |
+| `experiment/output/operational_diary.txt` | Concise event-oriented report |
+| `experiment/output/detailed_diary.txt` | Detailed report with available ticket and visual context |
+| `experiment/output/vlm_run_results.json` | Per-Investigation VLM-only results and sanitized failures; written in `vlm_only` mode |
+
+The canonical session and OCR/VLM/fusion intermediate observations are held in memory. The combined `ocr_vlm` mode does not currently write those intermediate records as separate artifacts. Temporary per-Investigation clips and crops are cleaned up after processing. Generated input and output contents are intended to remain local and are ignored by Git.
+
+## Development checks
 
 ```bash
 uv run pytest
-```
-
-Run Ruff:
-
-```bash
 uv run ruff check .
 ```
 
-## Documentation
-
-Detailed system design:
+## Repository map
 
 ```text
-docs/system_design.md
+docs/                 System design and project plan
+scripts/              Validation, calibration, and debug utilities
+src/events_diary/     Detection, evidence preparation, OCR, VLM, fusion,
+                      resolution, canonical data, and rendering modules
+tests/                Unit and integration tests
+experiment/input/     Local input-video workspace
+experiment/output/    Generated diary workspace
+data/                 Local media and diagnostic artifacts, where applicable
 ```
 
-Implementation roadmap:
+See [system design](docs/system_design.md) for architecture and [project plan](docs/project_plan.md) for project status and planned work.
 
-```text
-docs/project_plan.md
-```
+## Scope and limitations
 
-## Development Approach
-
-The project is developed incrementally.
-
-Each phase follows the same process:
-
-```text
-Plan
-→ Implement
-→ Unit tests
-→ Real-example validation
-→ Integration test
-→ Regression tests
-→ Refactor and document
-```
-
-The goal is to keep the implementation modular, testable, and evidence-driven without introducing unnecessary abstractions.
-
-## VLM-only reliability and partial runs
-
-VLM-only processing continues after an individual Investigation failure while
-preserving successful results. Both diaries keep failed intervals in
-chronological position with an explicit `VLM processing failed` marker and a
-concise reason. No values are invented for failed Investigations. Overall status
-is `completed` when all succeed, `partial` when successes and failures coexist,
-and `failed` when none succeeds. Successful structured fields, provenance,
-selected evidence references, and sanitized failure diagnostics are retained in
-`experiment/output/vlm_run_results.json`.
-
-Gemini uses direct HTTP without SDK retries and makes at most three total
-requests per Investigation, including the initial call and schema-compatibility
-calls. Only HTTP 429/503 and request timeouts are retried; explicit daily quota
-exhaustion stops immediately. Configurable exponential backoff with jitter
-honors provider `Retry-After`/`retryDelay` metadata. A 429 without explanatory
-metadata is classified as unknown. Real-provider reliability validation of
-these rules remains pending; the MVP is not fully reliability-validated until
-that validation succeeds.
+This is an FR24-focused MVP, not a general-purpose video understanding tool or a labeled accuracy benchmark. OCR quality depends on visible text, selected frames, and ticket layout; VLM extraction can also make field errors. UI thresholds and evidence-selection behavior are based on representative manual validation and remain subject to refinement. Real-video validation has exercised the end-to-end OCR/VLM path, but results do not imply uniform accuracy across recordings. Gemini runs require external connectivity and are subject to provider-side availability and quotas.
